@@ -416,7 +416,7 @@ export default {
     if (pathname === "/upload/part" && request.method === "PUT") return uploadPart(request, env, headers);
     if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers);
     if (pathname === "/upload/abort" && request.method === "DELETE") return uploadAbort(request, env, headers);
-    const deleteMatch = pathname.match(/^\\/document\\/([^/]+)$/);
+    const deleteMatch = pathname.match(/^\/document\/([^/]+)$/);
     if (deleteMatch && request.method === "DELETE") {
       const documentId = deleteMatch[1];
       if (!UUID_RE.test(documentId)) return reply("Not found", 404, headers);
