@@ -7,7 +7,7 @@ workers_dev = true
 # browser/client use; never place service_role or R2 secret keys in this file.
 [vars]
 APP_ORIGIN = "https://mibibliotecadigital.github.io"
-SUPABASE_PUBLISHABLE_KEY = "sb_publishable_O5T6pg0Gtp93f7zz-fI8H_QnFjaUAMl"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_O5T6pg0Gtp93f7zz-fI8hQ_nFjaUAMl"
 SUPABASE_URL = "https://eiphspzvujrblldzbfwn.supabase.co"
 
 # Bind the private R2 bucket. Do not enable a public R2 URL or custom domain.
