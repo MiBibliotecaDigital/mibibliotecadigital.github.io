@@ -725,8 +725,9 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
     if(!isManual){
       const oldTitle=metadataTitleClean(d.title),oldTitleGood=metadataTitleUsable(oldTitle);
       if(metadataTitleUsable(resolvedTitle)&&(!oldTitleGood||external?.match==='isbn'||(oldTitle&&/p[aá]g(?:ina)?\.?\s*\d+$/i.test(d.title||''))))updates.title=resolvedTitle.slice(0,300);
-      const oldAuthors=(d.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable);
-      if(resolvedAuthors.length&&(!oldAuthors.length||external?.match==='isbn'))updates.authors=resolvedAuthors.slice(0,20);
+      const originalAuthors=d.authors||[],oldAuthors=originalAuthors.map(metadataAuthorClean).filter(metadataAuthorUsable);
+      const authorNeedsCleanup=oldAuthors.length!==originalAuthors.length||originalAuthors.some((value,index)=>String(value||'').trim()!==metadataAuthorClean(value));
+      if(resolvedAuthors.length&&(!oldAuthors.length||external?.match==='isbn'||authorNeedsCleanup))updates.authors=resolvedAuthors.slice(0,20);
       else if((d.authors||[]).length&&!oldAuthors.length)updates.authors=[];
       if(resolvedYear&&(!d.year||external?.match==='isbn'))updates.publication_year=resolvedYear;
       if(isbn&&isbn!==oldIsbn)updates.isbn=isbn;
