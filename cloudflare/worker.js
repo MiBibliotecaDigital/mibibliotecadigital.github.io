@@ -573,6 +573,7 @@ async function deleteLibraryDocument(request, env, headers, documentId) {
   if (document.provider === "r2" && typeof document.r2_key === "string" && document.r2_key) {
     try {
       await env.BIBLIOTECA.delete(document.r2_key);
+      await env.BIBLIOTECA.delete("covers/" + documentId + ".jpg");
     } catch (error) {
       storageCleanupPending = true;
       console.error("Orphaned private R2 object requires cleanup", { key: document.r2_key, error: String(error) });
@@ -581,6 +582,57 @@ async function deleteLibraryDocument(request, env, headers, documentId) {
   return jsonReply({ ok: true, storageCleanupPending }, 200, headers);
 }
 
+
+
+async function getLibraryThumbnail(request, env, headers, documentId) {
+  const authorization = request.headers.get("Authorization") || "";
+  if (!/^Bearer\s+\S+$/i.test(authorization)) return reply("Authentication required", 401, headers);
+  if (!env.SUPABASE_URL || !env.SUPABASE_PUBLISHABLE_KEY || !env.BIBLIOTECA) return reply("Gateway is not configured", 503, headers);
+  const query = new URLSearchParams({ select: "id,provider,r2_key", id: "eq." + documentId, provider: "eq.r2", limit: "1" });
+  const response = await fetch(env.SUPABASE_URL.replace(/\/+$/, "") + "/rest/v1/documents?" + query, {
+    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: authorization, Accept: "application/json" }
+  });
+  if (response.status === 401 || response.status === 403) return reply("Authentication or permission check failed", response.status, headers);
+  if (!response.ok) return reply("Authorization service unavailable", 502, headers);
+  const rows = await response.json();
+  if (!Array.isArray(rows) || !rows[0]) return reply("Thumbnail not found", 404, headers);
+  const object = await env.BIBLIOTECA.get("covers/" + documentId + ".jpg");
+  if (!object) return reply("Thumbnail not generated", 404, headers);
+  headers.set("Content-Type", "image/jpeg");
+  headers.set("Content-Length", String(object.size));
+  headers.set("Cache-Control", "private, max-age=86400");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  if (object.httpEtag) headers.set("ETag", object.httpEtag);
+  if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+  return new Response(object.body, { status: 200, headers });
+}
+
+async function putLibraryThumbnail(request, env, headers, documentId) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  const contentType = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (contentType !== "image/jpeg") return reply("Only JPEG thumbnails are accepted", 415, headers);
+  const declaredSize = Number(request.headers.get("Content-Length") || 0);
+  if (declaredSize > 512 * 1024) return reply("Thumbnail exceeds the 512 KiB limit", 413, headers);
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const query = new URLSearchParams({ select: "id,provider,r2_key,upload_status", id: "eq." + documentId, provider: "eq.r2", upload_status: "eq.stored", limit: "1" });
+  const response = await fetch(base + "/rest/v1/documents?" + query, {
+    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
+  });
+  if (!response.ok) return reply("Could not verify document ownership", 502, headers);
+  const rows = await response.json();
+  if (!Array.isArray(rows) || !rows[0]) return reply("Stored document not found", 404, headers);
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!bytes.length || bytes.length > 512 * 1024) return reply("Thumbnail size is invalid", 413, headers);
+  if (bytes.length < 3 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) return reply("Thumbnail is not a valid JPEG image", 415, headers);
+  await env.BIBLIOTECA.put("covers/" + documentId + ".jpg", bytes, {
+    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=31536000, immutable" },
+    customMetadata: { documentId, generatedBy: auth.user.id }
+  });
+  return jsonReply({ ok: true, documentId, size: bytes.length }, 201, headers);
+}
 
 export default {
   async fetch(request, env) {
@@ -1207,6 +1259,22 @@ async function lookupMelosProduct(request, env, headers) {
     checked: checked.slice(0, 8)
   }, 200, headers);
 }
+
+
+    const thumbnailMatch = pathname.match(/^\/thumbnail\/([^/]+)$/);
+    if (thumbnailMatch) {
+      const documentId = thumbnailMatch[1];
+      if (!UUID_RE.test(documentId)) return reply("Not found", 404, headers);
+      try {
+        if (request.method === "GET" || request.method === "HEAD") return await getLibraryThumbnail(request, env, headers, documentId);
+        if (request.method === "PUT") return await putLibraryThumbnail(request, env, headers, documentId);
+        headers.set("Allow", "GET, HEAD, PUT, OPTIONS");
+        return reply("Method not allowed", 405, headers);
+      } catch (error) {
+        console.error("Thumbnail gateway failure", error);
+        return reply("Unable to retrieve or store thumbnail", 502, headers);
+      }
+    }
 
     if (pathname === "/admin/reconcile-storage" && request.method === "POST") {
       const auth = await requireAdmin(request, env, headers);
