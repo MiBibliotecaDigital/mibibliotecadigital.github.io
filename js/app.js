@@ -1188,7 +1188,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const contexts=titles.map(title=>({title,authors:pdfAuthors,isbn,publisher:pdfPublisher,year:pdfYear,identifiers}));
   const external=await lookupBibliographicCandidate(contexts,identifiers,kind);
   const accepted=metadataCandidateAccepted(external);
-  const finalKind=kind==='unknown'&&accepted&&external.documentKind?external.documentKind:kind;
+  const finalKind=kind==='unknown'&&accepted?(external.documentKind||(external.printType==='BOOK'?'book':'unknown')):kind;
   const proposedTitle=accepted?external.title:primaryTitle;
   const proposedAuthors=accepted&&external.authors?.length?external.authors:pdfAuthors;
   const duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn,bibliographicIdentifiers:identifiers};
