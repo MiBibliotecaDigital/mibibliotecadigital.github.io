@@ -95,3 +95,36 @@
 .books-admin-table td .metadata-state{white-space:nowrap}
 .books-admin-table td small{display:block;max-width:220px;overflow-wrap:anywhere}
 @media(max-width:700px){.books-admin-actions{display:grid;grid-template-columns:1fr}.books-admin-actions button{width:100%}}
+
+/* Compact horizontal book-management rows and bulk selection */
+.books-admin-table-panel{overflow-x:auto}
+.books-admin-table{min-width:1240px;width:100%;table-layout:auto}
+.books-admin-table th,.books-admin-table td{padding:8px 9px;vertical-align:middle;white-space:nowrap}
+.books-admin-table td:first-child{min-width:0;max-width:none}
+.books-admin-table td:first-child small,.books-admin-table td small{display:inline;margin:0;max-width:none;overflow:hidden;text-overflow:ellipsis}
+.books-admin-table .select-cell{width:34px;min-width:34px;text-align:center}
+.books-admin-table .select-cell input{width:15px;height:15px;margin:0;vertical-align:middle;accent-color:#47766f;cursor:pointer}
+.books-admin-table .book-title-cell{min-width:320px;max-width:470px;overflow:hidden;text-overflow:ellipsis}
+.books-admin-table .row-title{font-weight:700;max-width:260px;display:inline-block;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.books-admin-table .row-author{display:inline-block;max-width:170px;color:var(--m);font-size:10px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+.books-admin-table .nowrap-cell{white-space:nowrap}
+.books-admin-table .metadata-compact-cell{max-width:230px;overflow:hidden;text-overflow:ellipsis}
+.books-admin-table .metadata-compact-cell .metadata-state{display:inline-block;vertical-align:middle}
+.books-admin-table .row-meta-detail,.books-admin-table .row-kind,.books-admin-table .row-category{display:inline-block;font-size:10px;color:var(--m);vertical-align:middle}
+.books-admin-table .row-meta-detail{max-width:125px;overflow:hidden;text-overflow:ellipsis}
+.books-admin-table .duplicate-warning{display:inline-block;margin:0 0 0 6px;padding:2px 5px;border-radius:4px;background:#fff4df;line-height:1.2;white-space:nowrap}
+.books-admin-table .row-actions{white-space:nowrap}
+.books-admin-table .row-actions .small-action{padding:5px 7px;margin:1px;font-size:10px}
+.bulk-selection-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 10px;padding:9px 11px;border:1px solid var(--l);border-radius:8px;background:#f8faf9;font-size:12px}
+.bulk-selection-bar>span{font-weight:700;color:var(--n)}
+.bulk-selection-bar>div{display:flex;gap:7px;flex-wrap:wrap}
+.bulk-selection-bar button{width:auto;padding:7px 10px;font-size:11px}
+.bulk-selection-bar button:disabled{opacity:.45;cursor:not-allowed}
+.danger-button{background:#fff1ef;color:#a23f35;border:1px solid #e9c4bf;border-radius:8px;padding:10px 12px;font-weight:700}
+.danger-button:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:700px){
+ .books-admin-table{min-width:1180px}
+ .bulk-selection-bar{align-items:flex-start}
+ .bulk-selection-bar>div{width:100%}
+ .bulk-selection-bar button{flex:1}
+}
