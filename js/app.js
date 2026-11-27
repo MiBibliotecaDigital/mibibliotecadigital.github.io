@@ -1091,11 +1091,6 @@ function metadataCategoryFromTags(tags,kind){
 function metadataKindLabel(kind){return({book:'Libro',academic:'Tesis / trabajo académico',article:'Artículo',music_score:'Partitura / cancionero',periodical:'Revista / publicación periódica',manual:'Manual / guía',reference:'Obra de referencia',other:'Otro tipo de documento',unknown:'Sin clasificar'})[kind]||'Sin clasificar'}
 function metadataMatchLabel(status,confidence){const score=confidence===null||confidence===undefined?'':(' · '+confidence+'%');return({matched:'Catálogo coincidente'+score,review:'Coincidencia para confirmar'+score,unmatched:'Sin coincidencia',non_book:'Posible documento no bibliográfico',duplicate:'Posible duplicado'+score})[status]||'Sin revisar'}
 function metadataSourceLabel(source){return({filename:'Nombre del archivo',embedded:'Metadatos internos del PDF',pdf_text:'Texto extraído del PDF',manual:'Revisión manual'})[source]||'Sin especificar'}
-function metadataCategoryFromTags(tags,kind){
- const s=metadataTextKey((tags||[]).join(' '));if(kind==='music_score')return'Partituras';if(s.includes('guitarra')||s.includes('guitar'))return'Partituras para guitarra';if(s.includes('piano'))return'Música para piano';if(s.includes('jazz'))return'Jazz';if(s.includes('musica')||s.includes('music'))return'Música';if(kind==='academic')return'Trabajos académicos';if(kind==='article')return'Artículos';if(kind==='periodical')return'Publicaciones periódicas';if(kind==='manual')return'Manuales y guías';if(kind==='reference')return'Obras de referencia';return'General';
-}
-
-
 async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additionalCandidates=[]){
  let d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
  if(!d){
