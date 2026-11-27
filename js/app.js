@@ -470,14 +470,22 @@ function editDocumentMetadata(id){
  const candidateIdText=candidateIds.map(x=>metadataIdentifierLabel(x.type)+': '+x.value).join(' · ')||'Sin identificadores compatibles';
  const evidence=d.metadataEvidence||{},detectedIds=(evidence.identifiers||candidate?.evidence?.identifiersFound||d.bibliographicIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value);
  const repeatedSummary=(evidence.repeatedLines||candidate?.evidence?.repeatedLines||[]).slice(0,5).map(x=>x.text+' (págs. '+(x.pages||[]).join(', ')+')').join(' · ');
+ const melosCatalog=evidence.melosCatalog||null;
+ const melosRows=melosCatalog?[
+  ['Autor/Marca',melosCatalog.author],['Instrumento',melosCatalog.instrument],['Cod',melosCatalog.code],
+  ['Tags',melosCatalog.tagsText||((melosCatalog.tags||[]).join(' · '))],['Editorial',melosCatalog.publisher],
+  ['Código de barras',melosCatalog.barcode],['Peso de envío',melosCatalog.shippingWeight],['Dimensiones',melosCatalog.dimensions],
+  ...(melosCatalog.attributes||[]).map(x=>[x.label,x.value])
+ ].filter(x=>x[1]):[];
+ const melosEvidence=melosCatalog?'<div class="notice metadata-suggestion"><b>Ficha de producto · Ediciones Melos</b>'+melosRows.map(([k,v])=>'<small><b>'+esc(k)+':</b> '+esc(v)+'</small>').join('')+(melosCatalog.price?'<small>Precio de catálogo: '+esc(melosCatalog.price)+'</small>':'')+(melosCatalog.stock?'<small>Disponibilidad: '+esc(melosCatalog.stock)+'</small>':'')+(melosCatalog.url?'<small><a href="'+esc(melosCatalog.url)+'" target="_blank" rel="noopener noreferrer">Abrir ficha oficial ↗</a></small>':'')+'</div>':'';
  const lookupEvidence=evidence.catalogLookup||null,selectedLookup=lookupEvidence?.selected||null,lookupIds=(selectedLookup?.recoveredIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value).join(' · ');
  const lookupAttempts=(lookupEvidence?.attempts||[]).map(x=>esc(x.source)+': '+(x.error?'error · '+esc(x.error):esc(String(x.results)+' resultado(s)'))).join(' · ');
  const publisherCode=(evidence.identifiers||d.bibliographicIdentifiers||[]).find(x=>x.type==='publisher_number');
  const worldcatUrl=publisherCode?'https://search.worldcat.org/search?q='+encodeURIComponent('mn='+String(publisherCode.value).replace(/[^0-9A-Z]/gi,'').toLowerCase()):'';
  const lookupLine=lookupEvidence?'<small>Consultas externas: '+(lookupAttempts||'Sin consultas registradas')+'</small>'+(selectedLookup?'<small>Coincidencia: '+esc(selectedLookup.source||'Catálogo')+(lookupIds?' · Identificadores recuperados: '+esc(lookupIds):'')+(selectedLookup.sourceUrl?' · <a href="'+esc(selectedLookup.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro ↗</a>':'')+'</small>':'<small>No se encontró una coincidencia exacta en las fuentes automáticas consultadas.</small>')+(worldcatUrl?'<small><a href="'+esc(worldcatUrl)+'" target="_blank" rel="noopener noreferrer">Buscar este número en WorldCat ↗</a></small>':''):'';
  const evidenceBox=(detectedIds.length||repeatedSummary||evidence.sampledPages?.length||lookupEvidence)?'<div class="notice metadata-suggestion"><b>Evidencia extraída del PDF y catálogos</b><small>Páginas examinadas: '+esc((evidence.sampledPages||candidate?.evidence?.sampledPages||[]).join(', ')||'No disponible')+' · '+esc(evidence.pageCount||'')+' páginas totales</small>'+(detectedIds.length?'<small>Identificadores detectados en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+lookupLine+'</div>':'';
- const box=candidate?'<div class="notice metadata-suggestion"><b>Sugerencia de '+esc(candidate.source||'catálogo')+' · '+esc(candidate.score||0)+'/100</b><p>'+esc(candidate.title||'Sin título')+' · '+esc((candidate.authors||[]).join(', ')||'Autor no identificado')+' · '+esc(candidate.year||'Año sin indicar')+'</p><small>'+esc(candidateIdText)+' · Editorial: '+esc(candidate.publisher||'No informada')+'</small>'+(detectedIds.length?'<small>Detectado en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+(candidate.sourceUrl?'<small><a href="'+esc(candidate.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro RISM ↗</a></small>':'')+'<button type="button" class="secondary" id="use-catalog-candidate">Usar esta sugerencia en el formulario</button></div>':'';
- m.innerHTML='<section class="modal metadata-modal"><header><b>Ficha bibliográfica</b><button id="close" type="button">Cerrar ×</button></header>'+box+evidenceBox+'<form id="metadata-form"><label>Título<input name="title" maxlength="300" required value="'+esc(d.title)+'"></label><label>Autor/es<input name="authors" maxlength="1000" value="'+esc(d.authors.join(', '))+'" placeholder="Separar varios autores con coma"></label><div class="upload-grid"><label>Tipo de documento<select name="documentKind">'+[['unknown','Sin clasificar'],['book','Libro'],['academic','Tesis / trabajo académico'],['article','Artículo'],['music_score','Partitura / cancionero'],['periodical','Revista / publicación periódica'],['manual','Manual / guía'],['reference','Obra de referencia'],['other','Otro documento']].map(([v,t])=>'<option value="'+v+'" '+((d.documentKind||'unknown')===v?'selected':'')+'>'+t+'</option>').join('')+'</select></label><label>Categoría<input name="category" maxlength="100" value="'+esc(d.category)+'" required></label><label>Año de publicación<input name="publicationYear" type="number" min="1000" max="2100" value="'+esc(d.year)+'" placeholder="Opcional"></label><label>Colección<select name="collectionId"><option value="">Sin colección</option>'+collections.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===d.collectionId?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label><label>Cantidad de páginas<input name="pageCount" type="number" min="1" max="100000" value="'+esc(d.pageCount||'')+'" placeholder="Opcional"></label><label>ISBN<input name="isbn" maxlength="32" value="'+esc(d.isbn||'')+'"></label><label>Editorial<input name="publisher" maxlength="200" value="'+esc(d.publisher||'')+'"></label></div><label>Otros identificadores bibliográficos<textarea name="bibliographicIdentifiers" rows="4" maxlength="2000" placeholder="ISSN: 1234-567X&#10;DOI: 10.xxxx/xxxxx&#10;ISMN: 9790...&#10;Número editorial / de plancha: BA 11111">'+esc(metadataFormatIdentifiers(d.bibliographicIdentifiers||[]))+'</textarea><small>Un identificador por línea. Se admiten ISBN, ISSN, DOI, ISMN, ISWC, OCLC y números editoriales o de plancha.</small></label><label>Temas / etiquetas<input name="tags" maxlength="1000" value="'+esc((d.tags||[]).join(', '))+'" placeholder="guitarra, armonía, piano…"></label><label>Descripción<textarea name="description" rows="4" maxlength="3000">'+esc(d.description)+'</textarea></label><p class="muted">Origen: '+esc(metadataSourceLabel(d.metadataSource||'filename'))+' · Coincidencia: '+esc(metadataMatchLabel(d.metadataMatchStatus,d.metadataConfidence))+' · Tipo probable: '+esc(metadataKindLabel(d.documentKind))+'</p><div class="metadata-actions"><button class="secondary" id="save-private" type="button">'+(published?'Guardar cambios':'Guardar sin publicar')+'</button><button class="primary" id="publish-toggle" type="button">'+(published?'Guardar y retirar del catálogo':'Guardar y publicar')+'</button></div></form></section>';
+ const box=candidate?'<div class="notice metadata-suggestion"><b>Sugerencia de '+esc(candidate.source||'catálogo')+' · '+esc(candidate.score||0)+'/100</b><p>'+esc(candidate.title||'Sin título')+' · '+esc((candidate.authors||[]).join(', ')||'Autor no identificado')+' · '+esc(candidate.year||'Año sin indicar')+'</p><small>'+esc(candidateIdText)+' · Editorial: '+esc(candidate.publisher||'No informada')+'</small>'+(detectedIds.length?'<small>Detectado en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+(candidate.sourceUrl?'<small><a href="'+esc(candidate.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir ficha del producto ↗</a></small>':'')+'<button type="button" class="secondary" id="use-catalog-candidate">Usar esta sugerencia en el formulario</button></div>':'';
+ m.innerHTML='<section class="modal metadata-modal"><header><b>Ficha bibliográfica</b><button id="close" type="button">Cerrar ×</button></header>'+box+evidenceBox+melosEvidence+'<form id="metadata-form"><label>Título<input name="title" maxlength="300" required value="'+esc(d.title)+'"></label><label>Autor/es<input name="authors" maxlength="1000" value="'+esc(d.authors.join(', '))+'" placeholder="Separar varios autores con coma"></label><div class="upload-grid"><label>Tipo de documento<select name="documentKind">'+[['unknown','Sin clasificar'],['book','Libro'],['academic','Tesis / trabajo académico'],['article','Artículo'],['music_score','Partitura / cancionero'],['periodical','Revista / publicación periódica'],['manual','Manual / guía'],['reference','Obra de referencia'],['other','Otro documento']].map(([v,t])=>'<option value="'+v+'" '+((d.documentKind||'unknown')===v?'selected':'')+'>'+t+'</option>').join('')+'</select></label><label>Categoría<input name="category" maxlength="100" value="'+esc(d.category)+'" required></label><label>Año de publicación<input name="publicationYear" type="number" min="1000" max="2100" value="'+esc(d.year)+'" placeholder="Opcional"></label><label>Colección<select name="collectionId"><option value="">Sin colección</option>'+collections.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===d.collectionId?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label><label>Cantidad de páginas<input name="pageCount" type="number" min="1" max="100000" value="'+esc(d.pageCount||'')+'" placeholder="Opcional"></label><label>ISBN<input name="isbn" maxlength="32" value="'+esc(d.isbn||'')+'"></label><label>Editorial<input name="publisher" maxlength="200" value="'+esc(d.publisher||'')+'"></label></div><label>Otros identificadores bibliográficos<textarea name="bibliographicIdentifiers" rows="4" maxlength="2000" placeholder="ISSN: 1234-567X&#10;DOI: 10.xxxx/xxxxx&#10;ISMN: 9790...&#10;Número editorial / de plancha: BA 11111">'+esc(metadataFormatIdentifiers(d.bibliographicIdentifiers||[]))+'</textarea><small>Un identificador por línea. Se admiten ISBN, ISSN, DOI, ISMN, ISWC, OCLC y números editoriales o de plancha.</small></label><label>Temas / etiquetas<input name="tags" maxlength="1000" value="'+esc((d.tags||[]).join(', '))+'" placeholder="guitarra, armonía, piano…"></label><label>Descripción<textarea name="description" rows="4" maxlength="3000">'+esc(d.description)+'</textarea></label><p class="muted">Origen: '+esc(metadataSourceLabel(d.metadataSource||'filename'))+' · Coincidencia: '+esc(metadataMatchLabel(d.metadataMatchStatus,d.metadataConfidence))+' · Tipo probable: '+esc(metadataKindLabel(d.documentKind))+'</p><div class="metadata-actions"><button class="secondary" id="save-private" type="button">'+(published?'Guardar cambios':'Guardar sin publicar')+'</button><button class="primary" id="publish-toggle" type="button">'+(published?'Guardar y retirar del catálogo':'Guardar y publicar')+'</button></div></form></section>';
  document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.onclick=e=>{if(e.target===m)m.remove()};
  const use=m.querySelector('#use-catalog-candidate');if(use)use.onclick=()=>{
   const form=m.querySelector('#metadata-form'),set=(n,v)=>{const field=form.elements.namedItem(n);if(field&&v!==undefined&&v!==null&&v!=='')field.value=v};
@@ -754,7 +762,7 @@ function metadataUniqueIdentifiers(items){
 function metadataExtractPublisherNumbers(pageLines){
   const found=new Map();
   const patterns=[
-    /\bBA\s*[-.]?\s*\d{4,7}(?:[-.]\d{2,3})?\b/gi,
+    /\b(?:BA\s*[-.]?\s*\d{4,7}(?:[-.]\d{2,3})?|MEL\s*[-.]?\s*\d{3,8})\b/gi,
     /\b(?:Bestell[- ]?(?:Nr\.?|Nummer)|Verlags[- ]?(?:Nr\.?|Nummer)|Publisher(?:'s)?\s*(?:No\.?|Number)|Plate\s*(?:No\.?|Number)|Plattennummer|Número\s+de\s+plancha|Cat(?:alogue|alog)?\s*(?:No\.?|Number))\s*[:#-]?\s*([A-Z]{1,5}\s*[-.]?\s*\d{3,8}(?:[-.]\d{2,3})?)/gi
   ];
   for(const line of pageLines||[]){
@@ -833,7 +841,7 @@ function metadataParseIdentifierInput(value){
       else if(label==='iswc')type='iswc';
       else if(label==='oclc')type='oclc';
       else type='publisher_number';
-    }else if(/^BA\s*[-.]?\s*\d{4,7}/i.test(line)){type='publisher_number';raw=line}
+    }else if(/^(?:BA\s*[-.]?\s*\d{4,7}|MEL\s*[-.]?\s*\d{3,8})/i.test(line)){type='publisher_number';raw=line}
     else continue;
     const normalized=metadataNormalizeIdentifier(type,raw);
     if(normalized&&raw)output.push({type,value:raw,normalized,source:'manual',pages:[],occurrences:0,confidence:100});
@@ -918,7 +926,7 @@ function metadataRankCandidate(candidate,context){
  const specific=metadataTitleIsSpecific(context.title)&&metadataTitleIsSpecific(candidate.title);
  let score;
  if(identifierMatch?.type==='publisher_number'){
-  score=titleScore>=.6?100:titleScore>=.35?96:metadataTitleIsSpecific(context.title)?86:92;
+  score=titleScore>=.6?100:titleScore>=.35?96:92;
  }else if(identifierMatch){
   const compatible=!metadataTitleIsSpecific(context.title)||titleScore>=.35;
   score=compatible?(titleScore>=.6?100:92):38;
@@ -1063,6 +1071,64 @@ async function imslpLookupPublisherNumber(identifier,contexts=[]){
   return{title,authors:authorRaw?[metadataAuthorClean(authorRaw)]:[],isbns:[],identifiers:[identifier],publisher:'',year:null,description:metadataCleanDescription(String(item.snippet||'').replace(/<[^>]*>/g,' ')),tags:['Música','Partituras'],pageCount:null,source:'IMSLP · número editorial',printType:'MUSIC',documentKind:'music_score',sourceId:item.title};
  }).filter(x=>metadataTitleUsable(x.title));
 }
+async function melosLookupPublisherNumber(identifier,trace=[]){
+ if(identifier?.type!=='publisher_number'||!/^(?:BA|MEL)\s*[-.]?\s*\d{3,8}$/i.test(identifier.value||''))return[];
+ const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
+ if(!base)throw new Error('Falta configurar el gateway de catálogo.');
+ const {data:{session}}=await db.auth.getSession();
+ if(!session?.access_token)throw new Error('Sesión vencida.');
+ const endpoint=new URL(base+'/catalog/melos');
+ endpoint.searchParams.set('code',String(identifier.value).replace(/[^A-Z0-9]/gi,'').toUpperCase());
+ const response=await fetch(endpoint,{headers:{Authorization:'Bearer '+session.access_token}});
+ let payload={};try{payload=await response.json()}catch{}
+ if(!response.ok)throw new Error(payload.error||('Gateway Melos HTTP '+response.status)+(payload.detail?': '+payload.detail:''));
+ if(!payload.match||!payload.product){
+  trace.push({source:'Melos · catálogo oficial',identifier:identifier.value,results:0,note:'Sin producto con Cod exacto'+(payload.productCandidates!==undefined?' · '+payload.productCandidates+' candidatos examinados':''),url:payload.query||null});
+  return[];
+ }
+ const product=payload.product,normalized=metadataNormalizeIdentifier('publisher_number',identifier.value);
+ if(metadataNormalizeIdentifier('publisher_number',product.code)!==normalized){
+  trace.push({source:'Melos · catálogo oficial',identifier:identifier.value,results:0,note:'El Cod de la ficha no coincide exactamente.'});
+  return[];
+ }
+ const barcode=String(product.barcode||'').trim(),barcodeIsmn=metadataValidIsmn(barcode),barcodeIsbn=metadataValidIsbn(barcode);
+ const identifiers=[
+  {...identifier,value:product.code,normalized,source:'Melos · Cod verificado',sourceRecord:product.url,pages:identifier.pages||[],occurrences:identifier.occurrences||0,confidence:100}
+ ];
+ if(barcodeIsmn)identifiers.push({type:'ismn',value:barcodeIsmn,normalized:metadataNormalizeIdentifier('ismn',barcodeIsmn),source:'Melos · código de barras',sourceRecord:product.url,pages:[],occurrences:1,confidence:100});
+ else if(barcodeIsbn)identifiers.push({type:'isbn',value:barcodeIsbn,normalized:barcodeIsbn,source:'Melos · código de barras',sourceRecord:product.url,pages:[],occurrences:1,confidence:100});
+ const tags=[...(Array.isArray(product.tags)?product.tags:[])].filter(Boolean);
+ if(product.instrument)tags.unshift(product.instrument);
+ if(!tags.some(x=>metadataTextKey(x)==='partituras'))tags.unshift('Partituras');
+ if(!tags.some(x=>metadataTextKey(x)==='musica'))tags.unshift('Música');
+ const author=metadataAuthorClean(product.author||'');
+ const authors=metadataAuthorUsable(author)?[author]:[];
+ const catalogDetails={
+  ...product,
+  source:'Ediciones Melos · ficha oficial',
+  verifiedCode:product.code,
+  barcodeType:barcodeIsmn?'ISMN':barcodeIsbn?'ISBN':'Código de barras sin clasificar'
+ };
+ trace.push({source:'Melos · catálogo oficial',identifier:identifier.value,results:1,note:'Cod exacto verificado · '+(identifiers.length>1?'identificador normalizado recuperado':'ficha localizada'),url:product.url});
+ return [{
+  title:metadataTitleClean(product.title||''),
+  authors,
+  isbns:barcodeIsbn?[barcodeIsbn]:[],
+  identifiers,
+  publisher:product.publisher||'Ediciones Melos',
+  year:null,
+  description:'',
+  tags:[...new Set(tags)],
+  pageCount:null,
+  source:'Ediciones Melos · catálogo oficial',
+  sourceId:product.url,
+  sourceUrl:product.url,
+  printType:'MUSIC',
+  documentKind:'music_score',
+  catalogDetails
+ }].filter(x=>metadataTitleUsable(x.title));
+}
+
 async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind='unknown',trace=[]){
  let best=null;
  const scoreCandidates=(candidates,context)=>{
@@ -1073,8 +1139,14 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
  for(const identifier of identifiers){
   if(identifier.type==='publisher_number'){
    let candidates=[];
-   try{candidates=await rismLookupPublisherNumber(identifier,contexts);addTrace('RISM Online',identifier,candidates)}
-   catch(error){addTrace('RISM Online',identifier,[],error);console.info('RISM publisher-number lookup unavailable:',error?.message||error)}
+   if(/^(?:BA|MEL)s*[-.]?s*d{3,8}$/i.test(identifier.value||'')){
+    try{candidates=await melosLookupPublisherNumber(identifier,trace)}
+    catch(error){addTrace('Melos · catálogo oficial',identifier,[],error);console.info('Melos lookup unavailable:',error?.message||error)}
+   }
+   if(!candidates.length){
+    try{candidates=await rismLookupPublisherNumber(identifier,contexts);addTrace('RISM Online',identifier,candidates)}
+    catch(error){addTrace('RISM Online',identifier,[],error);console.info('RISM publisher-number lookup unavailable:',error?.message||error)}
+   }
    if(!candidates.length){
     try{candidates=await imslpLookupPublisherNumber(identifier,contexts);addTrace('IMSLP',identifier,candidates)}
     catch(error){addTrace('IMSLP',identifier,[],error);console.info('IMSLP publisher-number lookup unavailable:',error?.message||error)}
@@ -1288,7 +1360,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
   const publisherId=identifiers.find(x=>x.type==='publisher_number');
   const worldcatQuery=publisherId?'mn='+String(publisherId.value).replace(/[^0-9A-Z]/gi,'').toLowerCase():null;
-  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear,catalogLookup:{attempts:lookupTrace,selected:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null,noExactMatch:!external,worldcatQuery}}};
+  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear,catalogLookup:{attempts:lookupTrace,selected:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null,noExactMatch:!external,worldcatQuery},melosCatalog:accepted&&external?.catalogDetails?external.catalogDetails:null}};
   if(!manual){
    if(metadataTitleUsable(proposedTitle))updates.title=proposedTitle.slice(0,300);
    if(proposedAuthors.length)updates.authors=proposedAuthors.slice(0,20);
