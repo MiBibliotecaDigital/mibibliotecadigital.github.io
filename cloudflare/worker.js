@@ -804,16 +804,24 @@ function googleMetaValue(html, keys) {
 
 function googleItempropValues(html, prop) {
   const values = [];
-  const pattern = new RegExp("<([a-z][a-z0-9]*)\\\\b([^>]*\\\\bitemprop\\\\s*=\\\\s*['\\\"]" + prop +
-    "['\\\"][^>]*)>([\\\\s\\\\S]*?)<\\\\/\\\\1>", "gi");
+  const metaPattern = /<meta\b[^>]*>/gi;
+  let meta;
+  while ((meta = metaPattern.exec(html))) {
+    const tag = meta[0];
+    if (googleTagAttribute(tag, "itemprop").toLowerCase() === prop.toLowerCase()) {
+      const value = googleTagAttribute(tag, "content");
+      if (value && !values.includes(value)) values.push(value);
+    }
+  }
+  const pattern = /<([a-z][a-z0-9]*)\b([^>]*\bitemprop\s*=\s*["']([^"']+)["'][^>]*)>([\s\S]*?)<\/\1>/gi;
   let match;
   while ((match = pattern.exec(html))) {
-    const value = googleTagAttribute("<" + match[1] + match[2] + ">", "content") || melosHtmlText(match[3]);
+    if (match[3].toLowerCase() !== prop.toLowerCase()) continue;
+    const value = googleTagAttribute("<" + match[1] + match[2] + ">", "content") || melosHtmlText(match[4]);
     if (value && !values.includes(value)) values.push(value);
   }
   return values;
 }
-
 function googleJsonBooks(html) {
   const found = [];
   const scripts = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
@@ -926,7 +934,8 @@ function googleBookResultLinks(html) {
   const anchors = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
   let anchor;
   while ((anchor = anchors.exec(html))) {
-    let href = googleTagAttribute("<a " + anchor[1] + ">", "href");
+    const hrefMatch = anchor[1].match(/\bhref\s*=\s*(["'])(.*?)\1/i);
+    let href = hrefMatch ? decodeMelosHtml(hrefMatch[2]) : "";
     if (!href) continue;
     try {
       let url = new URL(href, "https://www.google.es");
