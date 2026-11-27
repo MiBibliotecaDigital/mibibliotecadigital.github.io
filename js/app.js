@@ -621,13 +621,18 @@ function startAdminCoverBackfill(){
  const ids=books.filter(x=>x.provider==='r2').map(x=>x.id);
  if(!ids.length)return;
  const total=ids.length;let complete=0,generated=0,failed=0;
+ const updateStatus=()=>{
+  const node=document.querySelector('#cover-batch-status');
+  if(node)node.textContent='Preparación automática: '+complete+' de '+total+' · '+generated+' guardadas · '+failed+' pendientes';
+ };
  // Begin after the first paint so the initial catalogue remains responsive.
  setTimeout(()=>{
+  updateStatus();
   Promise.all(ids.map(id=>queueCoverThumbnail(id).then(ok=>{
-   complete++;if(ok)generated++;else failed++;
+   complete++;if(ok)generated++;else failed++;updateStatus();
    if(complete===total)console.info('Cover backfill finished:',{total,generated,failed});
   }).catch(error=>{
-   complete++;failed++;
+   complete++;failed++;updateStatus();
    if(complete===total)console.info('Cover backfill finished:',{total,generated,failed,error:String(error)});
   })));
  },700);
