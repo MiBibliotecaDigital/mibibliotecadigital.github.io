@@ -1047,16 +1047,47 @@ async function isbnLabSearch(value) {
  return request;
 }
 
-let googleBooksBackoffUntil=0;
+const googleBooksCache=new Map();
+let googleBooksRequestChain=Promise.resolve(),googleBooksLastRequest=0,googleBooksBackoffUntil=0;
 async function googleBooksSearch(context){
- if(Date.now()<googleBooksBackoffUntil)throw new Error('Google Books HTTP 429 · pausa temporal por límite de consultas');
- const p=new URLSearchParams({maxResults:'10',printType:'books',projection:'full'});
- if(context.isbn)p.set('q','isbn:'+context.isbn);else{const terms=['intitle:"'+String(context.title||'').replace(/["<>]/g,' ').slice(0,150)+'"'];if(context.authors?.[0])terms.push('inauthor:"'+String(context.authors[0]).replace(/["<>]/g,' ').slice(0,80)+'"');p.set('q',terms.join(' '))}
- const r=await fetch('https://www.googleapis.com/books/v1/volumes?'+p,{signal:AbortSignal.timeout(9000)});
- if(r.status===429){googleBooksBackoffUntil=Date.now()+5*60*1000;throw new Error('Google Books HTTP 429 · pausa de 5 minutos')}
- if(!r.ok)throw new Error('Google Books HTTP '+r.status);
- const data=await r.json();return(data.items||[]).map(metadataCandidateFromGoogle).filter(x=>metadataTitleUsable(x.title));
+ const isbn=metadataValidIsbn(context.isbn||"");
+ const title=String(context.title||"").trim();
+ const author=String(context.authors?.[0]||"").trim();
+ if(!isbn&&!title)return[];
+ const cacheKey=isbn?"isbn:"+isbn:"title:"+metadataTextKey(title)+"|author:"+metadataTextKey(author);
+ if(googleBooksCache.has(cacheKey))return googleBooksCache.get(cacheKey);
+ const request=googleBooksRequestChain.then(async()=>{
+  if(googleBooksCache.has(cacheKey))return googleBooksCache.get(cacheKey);
+  if(Date.now()<googleBooksBackoffUntil)throw new Error("Google Books en pausa por cuota; reintentar en "+Math.ceil((googleBooksBackoffUntil-Date.now())/1000)+" s");
+  const wait=Math.max(0,1000-(Date.now()-googleBooksLastRequest));
+  if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+  googleBooksLastRequest=Date.now();
+  const base=(c.pdfGatewayUrl||"").replace(/\/+$/,"");
+  if(!base)throw new Error("Falta configurar el gateway de Google Books.");
+  const {data:{session}}=await db.auth.getSession();
+  if(!session?.access_token)throw new Error("Sesión vencida.");
+  const endpoint=new URL(base+"/catalog/google-books");
+  if(isbn)endpoint.searchParams.set("isbn",isbn);
+  else{
+   endpoint.searchParams.set("title",title.slice(0,180));
+   if(author)endpoint.searchParams.set("author",author.slice(0,120));
+  }
+  const response=await fetch(endpoint,{headers:{Authorization:"Bearer "+session.access_token},signal:AbortSignal.timeout(16000)});
+  let payload={};try{payload=await response.json()}catch{}
+  if(response.status===429){
+   const seconds=Math.max(1,Number(payload.retryAfterSeconds)||60);
+   googleBooksBackoffUntil=Date.now()+seconds*1000;
+   throw new Error("Google Books HTTP 429 · "+(payload.error||"cuota excedida")+" · reintentar en "+seconds+" s");
+  }
+  if(!response.ok)throw new Error(payload.error||("Google Books gateway HTTP "+response.status));
+  const candidates=(payload.items||[]).map(metadataCandidateFromGoogle).filter(x=>metadataTitleUsable(x.title));
+  googleBooksCache.set(cacheKey,candidates);
+  return candidates;
+ });
+ googleBooksRequestChain=request.catch(()=>null);
+ return request;
 }
+
 async function openLibrarySearch(context){
  const p=new URLSearchParams({fields:'key,title,author_name,first_publish_year,isbn,publisher,subject,number_of_pages_median',limit:'10'});
  if(context.isbn)p.set('isbn',context.isbn);else{p.set('title',context.title);if(context.authors?.[0])p.set('author',context.authors[0])}
@@ -1612,8 +1643,27 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   if(possibleDuplicates.length)updates.metadata_error='Posible coincidencia con "'+String(possibleDuplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.';
   else if(matchStatus==='review')updates.metadata_error='Se encontró una posible coincidencia de catálogo de '+external.score+'/100. Confirmá título, autor e identificadores antes de aplicarla.';
   else if(matchStatus==='non_book')updates.metadata_error='El documento parece ser una publicación no monográfica. Revisá su tipo antes de publicarlo.';
-  const autoPublished=exactMelosMatch&&!possibleDuplicates.length&&
-   (d.uploadStatus||d.upload_status)==='stored';
+  const matchedIdentifierType=external?.identifierMatch?.type||null;
+  const exactIsbnMatch=accepted&&external?.score===100&&matchedIdentifierType==='isbn'&&
+   external.titleSimilarity>=.92&&metadataTitleIsSpecific(primaryTitle)&&
+   metadataTitleIsSpecific(external.title);
+  const completeIsbnMetadata=exactIsbnMatch&&proposedAuthors.length>0&&
+   !!(external.publisher||pdfPublisher||d.publisher)&&
+   !!(external.year||pdfYear||d.year||d.publication_year)&&
+   !!(isbn||external.isbns?.length)&&
+   !!((updates.tags||d.tags||[]).length);
+  const safeCatalogMatch=exactMelosMatch||completeIsbnMetadata;
+  const autoPublished=safeCatalogMatch&&!possibleDuplicates.length&&
+   (d.uploadStatus||d.upload_status)==='stored'&&
+   ['book','music_score'].includes(finalKind);
+  updates.metadata_evidence.autoPublication={
+   eligible:safeCatalogMatch,
+   published:autoPublished,
+   reason:autoPublished?'Coincidencia editorial exacta o ISBN verificado con título concordante y ficha completa':
+    possibleDuplicates.length?'Bloqueado por posible duplicado':
+    exactIsbnMatch&&!completeIsbnMetadata?'Ficha ISBN incompleta':
+    accepted?'La coincidencia no cumple los requisitos de autopublicación':'Sin coincidencia bibliográfica aceptada'
+  };
   if(autoPublished)updates.is_published=true;
   const{error}=await db.from('documents').update(updates).eq('id',id);
   if(error)throw error;
