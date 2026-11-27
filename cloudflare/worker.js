@@ -536,23 +536,6 @@ async function deleteLibraryDocument(request, env, headers, documentId) {
   return jsonReply({ ok: true, storageCleanupPending }, 200, headers);
 }
 
-async function uploadAbort(request, env, headers) {
-  const auth = await requireAdmin(request, env, headers);
-  if (auth.response) return auth.response;
-  const url = new URL(request.url);
-  const key = url.searchParams.get("key");
-  const uploadId = url.searchParams.get("uploadId");
-  if (!validUploadKey(key) || !uploadId || uploadId.length > 512) {
-    return reply("Invalid upload abort request.", 400, headers);
-  }
-  try {
-    await env.BIBLIOTECA.resumeMultipartUpload(key, uploadId).abort();
-    return new Response(null, { status: 204, headers });
-  } catch (error) {
-    console.error("R2 multipart abort failed", error);
-    return reply("Could not abort this upload.", 400, headers);
-  }
-}
 
 export default {
   async fetch(request, env) {
