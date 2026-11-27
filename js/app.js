@@ -109,7 +109,7 @@ function askDuplicateChoice(file,matches){
   });
 }
 async function uploadOneFile(file,token,onProgress,fileFingerprint){
-  const base=(c.pdfGatewayUrl||'').replace(/\\/+$/,'');
+  const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
   const auth={Authorization:'Bearer '+token,'Content-Type':'application/json'};
   let upload=null;
   const abort=async()=>{
@@ -178,7 +178,7 @@ async function discardUploadedDraft(id,token){
   if(!response.ok)throw new Error(result.error||'No se pudo descartar el duplicado.');
 }
 function normalizedBookText(value){
-  return String(value||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 }
 function bookDuplicateMatch(book,all){
   const isbn=String(book.isbn||'').replace(/[^0-9Xx]/g,'').toUpperCase();
@@ -277,7 +277,7 @@ function bindBookManagement(){
 async function reconcileStorageFromWorker(tokenOverride=null){
   const {data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;
   if(!token)throw new Error('Sesión vencida.');
-  const base=(c.pdfGatewayUrl||'').replace(/\\/+$/,'');
+  const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
   const response=await fetch(base+'/admin/reconcile-storage',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:'{}'});
   const data=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(data.error||data.message||'La pasarela no pudo recuperar los archivos.');
@@ -334,7 +334,7 @@ async function uploadMultiple(e){
   if(role!=='admin'||!live)return toast('Solo el administrador puede cargar documentos.');
   const files=[...selectedFiles];
   if(!files.length)return toast('Seleccioná al menos un PDF.');
-  const invalid=files.find(f=>!/\\.pdf$/i.test(f.name)||(f.type&&f.type!=='application/pdf')||f.size<100||f.size>2*1024*1024*1024);
+  const invalid=files.find(f=>!/\.pdf$/i.test(f.name)||(f.type&&f.type!=='application/pdf')||f.size<100||f.size>2*1024*1024*1024);
   if(invalid)return toast('Revisá "'+invalid.name+'": debe ser un PDF válido de hasta 2 GiB.');
   const {data:{session}}=await db.auth.getSession();
   if(!session?.access_token)return login('Tu sesión expiró. Inicia sesión nuevamente.');
