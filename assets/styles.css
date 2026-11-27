@@ -64,7 +64,6 @@
 .danger{color:#9c3f3f!important;background:#fff1f0!important;border-color:#edd0ce!important}
 .empty-state{background:white;border:1px dashed #cad4d8;border-radius:10px;padding:24px;color:var(--m)}
 .section-heading{margin:25px 0 4px}
-@media(max-width:1150px){.grid{grid-template-columns:repeat(min(var(--book-columns,3),3),minmax(0,1fr))}}
 @media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.catalog-controls{align-items:stretch}.catalog-controls label{flex:1 1 145px}}
 @media(max-width:700px){.grid{grid-template-columns:1fr}.book-list .book{grid-template-columns:105px minmax(0,1fr)}.book-list .cover{min-height:130px}.book-list .cover strong{font-size:15px}.shelf-row .book{flex-basis:195px}.catalog-controls{gap:8px;padding:11px}.catalog-controls label{min-width:calc(50% - 6px)}.catalog-controls button{flex:1}.account-panel .primary{max-width:none}.collection-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.user-table{min-width:720px}}
 
