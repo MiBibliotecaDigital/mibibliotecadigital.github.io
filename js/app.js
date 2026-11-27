@@ -981,17 +981,17 @@ function metadataCandidateFromIsbnLab(book, queriedIsbn) {
  const genres=(Array.isArray(book?.genres)?book.genres:[])
   .map(x=>typeof x==="string"?x:x?.name||"").filter(Boolean);
  const date=String(book?.publishDate||"").match(/(?:18|19|20)\d{2}/);
- const title=[book?.title,book?.subtitle].filter(Boolean).join(": ");
+ const subtitle=String(book?.subtitle||"").trim();
  const sourceUrl=typeof book?.link==="string"&&/^https:\/\/www\.isbnlab\.com\//i.test(book.link)?book.link:null;
  const identifiers=isbns.map(value=>({type:"isbn",value,normalized:value}));
  return {
-  title:metadataTitleClean(title),
+  title:metadataTitleClean(book?.title||""),
   authors,
   isbns,
   identifiers,
   publisher:publishers[0]||imprint[0]||"",
   year:date?Number(date[0]):null,
-  description:metadataCleanDescription(book?.description||""),
+  description:metadataCleanDescription([subtitle?("Subtítulo: "+subtitle):"",book?.description||""].filter(Boolean).join("\n\n")),
   tags:[...new Set([...subjects,...genres])].slice(0,40),
   pageCount:Number(book?.numberOfPages)||null,
   source:"ISBNLab",
