@@ -14,3 +14,11 @@ SUPABASE_URL = "https://eiphspzvujrblldzbfwn.supabase.co"
 [[r2_buckets]]
 binding = "BIBLIOTECA"
 bucket_name = "biblioteca-digital-archivos"
+
+# Required secret: ISBNLab API token (set in Cloudflare Dashboard or with
+# `npx wrangler secret put ISBNLAB_API_TOKEN`; never commit its value).
+[secrets]
+required = ["ISBNLAB_API_TOKEN"]
+
+# Optional secret: GOOGLE_BOOKS_API_KEY. Add it in Cloudflare Dashboard or
+# with `npx wrangler secret put GOOGLE_BOOKS_API_KEY` to enable Google Books API lookups.
