@@ -3,6 +3,13 @@ main = "cloudflare/worker.js"
 compatibility_date = "2026-11-27"
 workers_dev = true
 
+# Public runtime configuration. The Supabase publishable key is intended for
+# browser/client use; never place service_role or R2 secret keys in this file.
+[vars]
+APP_ORIGIN = "https://mibibliotecadigital.github.io"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_O5T6pg0Gtp93f7zz-fI8H_QnFjaUAMl"
+SUPABASE_URL = "https://eiphspzvujrblldzbfwn.supabase.co"
+
 # Bind the private R2 bucket. Do not enable a public R2 URL or custom domain.
 [[r2_buckets]]
 binding = "BIBLIOTECA"
