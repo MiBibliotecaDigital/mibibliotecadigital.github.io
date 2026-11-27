@@ -265,11 +265,11 @@ function updateBookSelectionUI(){
   const selectedVisible=visible.filter(x=>x.checked).length;
   if(header){header.checked=visible.length>0&&selectedVisible===visible.length;header.indeterminate=selectedVisible>0&&selectedVisible<visible.length}
   const countLabel=document.querySelector('#bulk-selection-count');
-  if(countLabel)countLabel.textContent=count+' seleccionado(s)';
+  if(countLabel){const visibleIds=new Set(visible.map(x=>x.dataset.selectBook)),hidden=[...selectedBookIds].filter(id=>!visibleIds.has(id)).length;countLabel.textContent=count+' seleccionado(s)'+(hidden?' · '+hidden+' fuera del filtro':'')}
   const canAct=count>0&&role==='admin'&&!metadataInProgress;
   const analyze=document.querySelector('#analyze-selected-books'),remove=document.querySelector('#delete-selected-books'),clear=document.querySelector('#clear-book-selection');
   if(analyze)analyze.disabled=!canAct;
-  if(remove)remove.disabled=!(count>0&&role==='admin');
+  if(remove)remove.disabled=!canAct;
   if(clear)clear.disabled=count===0;
 }
 function bindBookManagement(){
@@ -591,16 +591,16 @@ function editUser(id){const u=users.find(x=>x.id===id);if(!u)return;const m=docu
 async function deleteUser(id){const u=users.find(x=>x.id===id);if(!u||id===me.id)return;if(!confirm('¿Eliminar la cuenta de '+(u.name||u.email)+'? Esta acción no se puede deshacer.'))return;try{await adminUsersAction({action:'delete',userId:id});toast('Usuario eliminado.');await loadUser(me)}catch(error){toast('No se pudo eliminar: '+error.message)}}
 
 async function deleteSelectedDocuments(ids){
-  if(role!=='admin')return;
+  if(role!=='admin'||metadataInProgress)return;
   const unique=[...new Set(ids)].filter(Boolean),all=[...books,...pendingDocs],targets=unique.map(id=>all.find(x=>x.id===id)).filter(Boolean);
   if(!targets.length)return toast('No hay documentos seleccionados.');
   const preview=targets.slice(0,4).map(x=>x.title).join(' · '),extra=targets.length>4?' y '+(targets.length-4)+' más':'';
-  if(!confirm('Vas a eliminar definitivamente '+targets.length+' documento(s) y sus archivos PDF privados.\\n\\n'+preview+extra+'\\n\\nEsta acción no se puede deshacer. ¿Continuar?'))return;
+  if(!confirm('Vas a eliminar definitivamente '+targets.length+' documento(s) y sus archivos PDF privados.\n\n'+preview+extra+'\n\nEsta acción no se puede deshacer. ¿Continuar?'))return;
   const{data:{session}}=await db.auth.getSession();
   if(!session?.access_token)return login('Tu sesión expiró. Inicia sesión nuevamente.');
   const button=document.querySelector('#delete-selected-books');if(button)button.disabled=true;
   const base=(c.pdfGatewayUrl||'').replace(/\/+$/,''),token=session.access_token;
-  let cursor=0,deleted=0,failed=[];
+  let cursor=0,deleted=0,failed=[],cleanupPending=[];
   const worker=async()=>{
     while(true){
       const index=cursor++;if(index>=targets.length)return;
@@ -610,20 +610,19 @@ async function deleteSelectedDocuments(ids){
         const result=await response.json().catch(()=>({}));
         if(!response.ok)throw new Error(result.error||'No se pudo eliminar');
         selectedBookIds.delete(doc.id);deleted++;
-        if(result.storageCleanupPending)failed.push(doc.title+' (requiere limpieza R2)');
+        if(result.storageCleanupPending)cleanupPending.push(doc.title);
       }catch(error){failed.push(doc.title+' ('+(error?.message||'error')+')')}
       if(button)button.textContent='Eliminando '+deleted+'/'+targets.length+'…';
     }
   };
   await Promise.all(Array.from({length:Math.min(3,targets.length)},worker));
   if(button)button.textContent='Eliminar seleccionados';
-  const failedIds=new Set(failed.map(x=>x.split(' (')[0]));
-  for(const doc of targets)if(!failedIds.has(doc.title))selectedBookIds.delete(doc.id);
   await loadUser(me);
-  toast('Eliminación terminada: '+deleted+'/'+targets.length+' documento(s).'+(failed.length?' No completados: '+failed.join('; ').slice(0,500):''));
+  const details=[...failed.map(x=>'No eliminado: '+x),...cleanupPending.map(x=>'Registro eliminado; limpiar objeto R2: '+x)];
+  toast('Eliminación terminada: '+deleted+'/'+targets.length+' documento(s).'+(details.length?' '+details.join('; ').slice(0,500):''));
 }
 
-async function deleteDocument(id){const d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!d||role!=='admin')return;if(!confirm('¿Eliminar definitivamente "'+d.title+'" y su PDF privado? Esta acción no se puede deshacer.'))return;const {data:{session}}=await db.auth.getSession();if(!session?.access_token)return login('Tu sesión expiró.');const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');try{const response=await fetch(base+'/document/'+encodeURIComponent(id),{method:'DELETE',headers:{Authorization:'Bearer '+session.access_token}});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'No se pudo eliminar.');toast(result.storageCleanupPending?'Registro eliminado; el almacenamiento requiere limpieza manual.':'Documento y archivo eliminados.');await loadUser(me)}catch(error){toast('Error al eliminar: '+error.message)}}
+async function deleteDocument(id){const d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!d||role!=='admin')return;if(!confirm('¿Eliminar definitivamente "'+d.title+'" y su PDF privado? Esta acción no se puede deshacer.'))return;const {data:{session}}=await db.auth.getSession();if(!session?.access_token)return login('Tu sesión expiró.');const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');try{const response=await fetch(base+'/document/'+encodeURIComponent(id),{method:'DELETE',headers:{Authorization:'Bearer '+session.access_token}});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'No se pudo eliminar.');selectedBookIds.delete(id);toast(result.storageCleanupPending?'Registro eliminado; el almacenamiento requiere limpieza manual.':'Documento y archivo eliminados.');await loadUser(me)}catch(error){toast('Error al eliminar: '+error.message)}}
 function metadataTextKey(value){return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()}
 function metadataTitleClean(value){return String(value||'').replace(/\s+/g,' ').trim().replace(/\s*(?:p[aá]g(?:ina)?\.?\s*\d+|page\s+\d+)\s*$/i,'').trim()}
 function metadataTitleUsable(value){
