@@ -781,16 +781,175 @@ function melosExtractProduct(html, productUrl, expectedCode) {
   };
 }
 
+function googleTagAttribute(tag, name) {
+  const match = tag.match(new RegExp("\\b" + name + "\\s*=\\s*([\"'])([\\s\\S]*?)\\1", "i"));
+  return match ? decodeMelosHtml(match[2]) : "";
+}
+
+function googleMetaValue(html, keys) {
+  const wanted = new Set(keys.map(x => x.toLowerCase()));
+  const pattern = /<(?:meta|link)\b[^>]*>/gi;
+  let match;
+  while ((match = pattern.exec(html))) {
+    const tag = match[0];
+    const key = googleTagAttribute(tag, "itemprop") || googleTagAttribute(tag, "property") ||
+      googleTagAttribute(tag, "name") || googleTagAttribute(tag, "rel");
+    if (wanted.has(key.toLowerCase())) {
+      const value = googleTagAttribute(tag, "content") || googleTagAttribute(tag, "href");
+      if (value) return value.trim();
+    }
+  }
+  return "";
+}
+
+function googleItempropValues(html, prop) {
+  const values = [];
+  const pattern = new RegExp("<([a-z][a-z0-9]*)\\\\b([^>]*\\\\bitemprop\\\\s*=\\\\s*['\\\"]" + prop +
+    "['\\\"][^>]*)>([\\\\s\\\\S]*?)<\\\\/\\\\1>", "gi");
+  let match;
+  while ((match = pattern.exec(html))) {
+    const value = googleTagAttribute("<" + match[1] + match[2] + ">", "content") || melosHtmlText(match[3]);
+    if (value && !values.includes(value)) values.push(value);
+  }
+  return values;
+}
+
+function googleJsonBooks(html) {
+  const found = [];
+  const scripts = /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let script;
+  const visit = value => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) { for (const child of value) visit(child); return; }
+    const type = Array.isArray(value["@type"]) ? value["@type"].join(" ") : String(value["@type"] || "");
+    const title = value.name || value.headline || value.title || "";
+    if (title && (/book/i.test(type) || value.isbn || value.numberOfPages || value.bookFormat)) {
+      const personName = x => typeof x === "string" ? x : x?.name || "";
+      const names = value.author || value.creator || [];
+      const authors = (Array.isArray(names) ? names : [names]).map(personName).filter(Boolean);
+      const publisher = typeof value.publisher === "string" ? value.publisher : value.publisher?.name || "";
+      const isbnValues = String(value.isbn || "").split(/[,;\s]+/).filter(Boolean);
+      found.push({
+        title: String(title),
+        authors,
+        publisher,
+        publishedDate: String(value.datePublished || ""),
+        pageCount: Number(value.numberOfPages) || null,
+        description: String(value.description || ""),
+        categories: (Array.isArray(value.genre) ? value.genre : value.genre ? [value.genre] : []).map(String),
+        industryIdentifiers: isbnValues.map(identifier => ({ type: identifier.replace(/\D/g, "").length === 10 ? "ISBN_10" : "ISBN_13", identifier })),
+        printType: "BOOK",
+        sourceUrl: String(value.url || value["@id"] || "")
+      });
+    }
+    for (const child of Object.values(value)) if (child && typeof child === "object") visit(child);
+  };
+  while ((script = scripts.exec(html))) {
+    try { visit(JSON.parse(decodeMelosHtml(script[1]))); } catch {}
+  }
+  return found;
+}
+
+function googleBookFromHtml(html, bookUrl, queriedIsbn, fallbackTitle = "") {
+  const structured = googleJsonBooks(html)[0] || {};
+  const rows = [];
+  const rowPattern = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let row;
+  while ((row = rowPattern.exec(html))) {
+    const cells = [];
+    const cellPattern = /<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/gi;
+    let cell;
+    while ((cell = cellPattern.exec(row[1]))) cells.push(melosHtmlText(cell[1]));
+    if (cells.length >= 2) rows.push([cells[0].replace(/:$/, "").trim().toLowerCase(), cells.slice(1).join(" ").trim()]);
+  }
+  const rowValue = (...labels) => {
+    const keyset = new Set(labels.map(x => x.toLowerCase()));
+    return rows.find(([label, value]) => keyset.has(label) && value)?.[1] || "";
+  };
+  const heading = (html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || "";
+  const title = structured.title ||
+    googleMetaValue(html, ["og:title", "twitter:title", "name"]) ||
+    melosHtmlText(heading) || rowValue("title") || fallbackTitle;
+  if (!title || title.length < 4) return null;
+
+  const authors = structured.authors?.length ? structured.authors :
+    googleItempropValues(html, "author").concat(
+      rowValue("author", "authors").split(/\s*[,;]\s*/).filter(Boolean)
+    );
+  const publisher = structured.publisher || rowValue("publisher");
+  const publishedDate = structured.publishedDate || rowValue("published", "publication date", "date");
+  const description = structured.description || googleMetaValue(html, ["og:description", "description"]) ||
+    rowValue("description");
+  const pageText = structured.pageCount || rowValue("length", "pages");
+  const pageCount = Number(String(pageText || "").match(/\d+/)?.[0]) || null;
+  const subjectText = rowValue("subjects", "subject");
+  const categories = structured.categories?.length ? structured.categories :
+    subjectText.split(/\s*[›;|]\s*/).filter(Boolean);
+  const rawIsbns = [
+    ...(structured.industryIdentifiers || []).map(x => x.identifier),
+    ...googleItempropValues(html, "isbn"),
+    ...(html.match(/(?:97[89]\d{10}|\b\d{9}[\dXx]\b)/g) || [])
+  ];
+  const identifierMap = new Map();
+  for (const raw of rawIsbns) {
+    const id = String(raw || "").replace(/[^0-9Xx]/g, "").toUpperCase();
+    if ((id.length === 10 || id.length === 13) && !identifierMap.has(id)) {
+      identifierMap.set(id, { type: id.length === 10 ? "ISBN_10" : "ISBN_13", identifier: id });
+    }
+  }
+  // Search results are returned for this exact ISBN query. Attach the query ISBN
+  // so the client can independently compare it with title and author before accepting.
+  if (queriedIsbn && !identifierMap.has(queriedIsbn)) {
+    identifierMap.set(queriedIsbn, { type: queriedIsbn.length === 10 ? "ISBN_10" : "ISBN_13", identifier: queriedIsbn });
+  }
+  const id = (() => { try { return new URL(bookUrl).searchParams.get("id") || bookUrl; } catch { return bookUrl; } })();
+  return {
+    id,
+    volumeInfo: {
+      title: String(title).replace(/\s*-\s*Google Books\s*$/i, "").trim(),
+      authors: [...new Set(authors.map(x => String(x).trim()).filter(Boolean))],
+      publisher,
+      publishedDate,
+      description,
+      pageCount,
+      categories,
+      industryIdentifiers: [...identifierMap.values()],
+      printType: "BOOK",
+      infoLink: bookUrl
+    }
+  };
+}
+
+function googleBookResultLinks(html) {
+  const links = [];
+  const seen = new Set();
+  const anchors = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let anchor;
+  while ((anchor = anchors.exec(html))) {
+    let href = googleTagAttribute("<a " + anchor[1] + ">", "href");
+    if (!href) continue;
+    try {
+      let url = new URL(href, "https://www.google.es");
+      if (/^(?:www\.)?google\.(?:com|es)$/.test(url.hostname) && /\/url$/.test(url.pathname)) {
+        const wrapped = url.searchParams.get("q") || url.searchParams.get("url");
+        if (!wrapped) continue;
+        url = new URL(wrapped);
+      }
+      if (!/^books\.google\.(?:com|es)$/i.test(url.hostname) || !/^\/books(?:\/|$)/i.test(url.pathname)) continue;
+      url.hash = "";
+      const canonical = url.href;
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      links.push({ url: canonical, title: melosHtmlText(anchor[2]) });
+      if (links.length >= 5) break;
+    } catch {}
+  }
+  return links;
+}
+
 async function lookupGoogleBooks(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
-  if (!env.GOOGLE_BOOKS_API_KEY) {
-    return jsonReply({
-      error: "Google Books API key is not configured. Add the GOOGLE_BOOKS_API_KEY Worker secret.",
-      code: "google_books_key_missing"
-    }, 503, headers);
-  }
-
   const url = new URL(request.url);
   const isbn = String(url.searchParams.get("isbn") || "").replace(/[\s-]/g, "").toUpperCase();
   const title = String(url.searchParams.get("title") || "").trim().slice(0, 180);
@@ -802,61 +961,102 @@ async function lookupGoogleBooks(request, env, headers) {
     }
     query = "isbn:" + isbn;
   } else if (title) {
-    query = 'intitle:"' + title.replace(/["<>]/g, " ") + '"';
-    if (author) query += ' inauthor:"' + author.replace(/["<>]/g, " ") + '"';
+    query = '"' + title.replace(/["<>]/g, " ") + '"';
+    if (author) query += ' "' + author.replace(/["<>]/g, " ") + '"';
   } else {
     return jsonReply({ error: "An ISBN or title is required.", code: "missing_query" }, 400, headers);
   }
 
-  const apiUrl = new URL("https://www.googleapis.com/books/v1/volumes");
-  apiUrl.searchParams.set("q", query);
-  apiUrl.searchParams.set("maxResults", "10");
-  apiUrl.searchParams.set("printType", "books");
-  apiUrl.searchParams.set("projection", "full");
-  apiUrl.searchParams.set("key", env.GOOGLE_BOOKS_API_KEY);
+  const searchUrl = new URL("https://www.google.es/search");
+  searchUrl.searchParams.set("hl", "es");
+  searchUrl.searchParams.set("tbo", "p");
+  searchUrl.searchParams.set("tbm", "bks");
+  searchUrl.searchParams.set("q", query);
 
-  let upstream;
+  let searchResponse;
   try {
-    upstream = await fetch(apiUrl.toString(), {
-      headers: { Accept: "application/json" },
+    searchResponse = await fetch(searchUrl.toString(), {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "es-AR,es;q=0.9,en;q=0.7",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+      },
       signal: AbortSignal.timeout(12000)
     });
   } catch (error) {
-    console.error("Google Books request failed", error);
+    console.error("Google Books web search failed", error);
     return jsonReply({
-      error: "Google Books request failed.",
+      error: "Google Books web search request failed.",
       code: "google_books_unavailable",
-      detail: String(error?.message || error).slice(0, 240)
+      detail: String(error?.message || error).slice(0, 240),
+      queryUrl: searchUrl.toString()
     }, 502, headers);
   }
 
-  const retryHeader = upstream.headers.get("Retry-After");
-  const retryAfterSeconds = retryHeader === null ? null : Math.max(0, Number(retryHeader) || 0);
-  let payload = {};
-  try { payload = await upstream.json(); } catch {
-    return jsonReply({ error: "Google Books returned an invalid JSON response.", code: "invalid_upstream_response" }, 502, headers);
-  }
-  if (upstream.status === 429) {
+  if (searchResponse.status === 429 || searchResponse.status === 503) {
     return jsonReply({
-      error: payload?.error?.message || "Google Books request quota exceeded.",
+      error: "Google Books web search is temporarily rate-limited or unavailable.",
       code: "google_books_rate_limited",
-      retryAfterSeconds,
-      upstreamStatus: 429
+      retryAfterSeconds: Number(searchResponse.headers.get("Retry-After")) || 300,
+      upstreamStatus: searchResponse.status,
+      queryUrl: searchUrl.toString()
     }, 429, headers);
   }
-  if (!upstream.ok) {
-    const message = payload?.error?.message || ("Google Books HTTP " + upstream.status);
+  if (!searchResponse.ok) {
     return jsonReply({
-      error: message,
-      code: upstream.status === 400 || upstream.status === 403 ? "google_books_api_error" : "google_books_upstream_error",
-      upstreamStatus: upstream.status
-    }, upstream.status >= 500 ? 503 : 502, headers);
+      error: "Google Books web search returned HTTP " + searchResponse.status,
+      code: "google_books_upstream_error",
+      upstreamStatus: searchResponse.status,
+      queryUrl: searchUrl.toString()
+    }, 502, headers);
   }
+
+  const searchHtml = await searchResponse.text();
+  if (/unusual traffic|our systems have detected|recaptcha|\/sorry\/index/i.test(searchHtml)) {
+    return jsonReply({
+      error: "Google Books is presenting an anti-automation challenge; this is not a no-results response.",
+      code: "google_books_challenge",
+      retryAfterSeconds: 300,
+      queryUrl: searchUrl.toString()
+    }, 429, headers);
+  }
+
+  const links = googleBookResultLinks(searchHtml);
+  const detailResults = await Promise.all(links.slice(0, 4).map(async item => {
+    try {
+      const response = await fetch(item.url, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "Accept-Language": "es-AR,es;q=0.9,en;q=0.7",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+        },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!response.ok) return null;
+      const html = await response.text();
+      return googleBookFromHtml(html, item.url, isbn, item.title);
+    } catch { return null; }
+  }));
+
+  const candidates = detailResults.filter(Boolean);
+  if (!candidates.length) {
+    const searchText = melosHtmlText(searchHtml).slice(0, 6000);
+    const noResults = /no se han encontrado resultados|no results found|did not match any books/i.test(searchText);
+    if (noResults) return jsonReply({ items: [], totalItems: 0, queryUrl: searchUrl.toString() }, 200, headers);
+    return jsonReply({
+      error: "Google Books responded, but the book result pages could not be extracted. It is not being treated as ISBN not found.",
+      code: "google_books_unparsed",
+      queryUrl: searchUrl.toString()
+    }, 502, headers);
+  }
+
   return jsonReply({
-    items: Array.isArray(payload.items) ? payload.items : [],
-    totalItems: Number(payload.totalItems) || 0
+    items: candidates,
+    totalItems: candidates.length,
+    queryUrl: searchUrl.toString()
   }, 200, headers);
 }
+
 
 async function lookupIsbnLabBook(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
