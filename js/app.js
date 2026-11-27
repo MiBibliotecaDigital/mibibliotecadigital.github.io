@@ -648,7 +648,38 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
  if(!d){const{data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed,metadata_status,metadata_error,upload_status,original_filename,metadata_match_status,metadata_confidence,metadata_candidate,document_kind').eq('id',id).single();if(error||!row)throw error||new Error('Documento no encontrado.');d={...row,year:row.publication_year||'',authors:row.authors||[],tags:row.tags||[],metadataSource:row.metadata_source||'filename',metadataReviewed:!!row.metadata_reviewed,uploadStatus:row.upload_status||'stored',originalFilename:row.original_filename||''}}
  if(d.provider!=='r2')return{};if(d.uploadStatus&&d.uploadStatus!=='stored')throw new Error('El PDF todavía no está marcado como guardado en R2.');
  const{data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;if(!token)throw new Error('Sesión vencida.');
- const filename=metadataParseFilename(d.originalFilename||d.original_filename||d.title||''),pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+
+ const originalFilename=String(d.originalFilename||d.original_filename||'').trim();
+ const filename=metadataParseFilename(originalFilename||d.title||'');
+ // Cheap first pass: use the original filename and a previously validated ISBN.
+ // Only fetch the PDF when the catalog cannot establish a high-confidence match.
+ if(originalFilename&&metadataTitleUsable(filename.title)){
+  const storedIsbn=metadataValidIsbn(d.isbn),fastContext={title:filename.title,authors:filename.authors,isbn:storedIsbn,publisher:d.publisher||'',year:d.year||d.publication_year||null};
+  const fastCandidate=await lookupBibliographicCandidate([fastContext]);
+  const fastAccepted=!!(fastCandidate&&fastCandidate.score>=90&&(fastCandidate.isbnMatch||fastCandidate.titleSimilarity>=.88&&fastCandidate.authorMatch));
+  if(fastAccepted){
+   const kind=metadataDetectDocumentKind(originalFilename,'',fastCandidate),duplicateBase={id,title:fastCandidate.title,authors:fastCandidate.authors,isbn:storedIsbn||fastCandidate.isbns?.[0]||d.isbn};
+   const duplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
+   const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
+   const fastUpdates={metadata_error:duplicates.length?'Posible coincidencia con "'+String(duplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.':null,metadata_checked_at:new Date().toISOString(),metadata_match_status:duplicates.length?'duplicate':'matched',metadata_confidence:fastCandidate.score,metadata_candidate:null,document_kind:kind,metadata_status:'complete'};
+   if(!manual){
+    fastUpdates.title=fastCandidate.title.slice(0,300);
+    if(fastCandidate.authors?.length)fastUpdates.authors=fastCandidate.authors.slice(0,20);
+    if(storedIsbn||fastCandidate.isbns?.[0])fastUpdates.isbn=storedIsbn||fastCandidate.isbns[0];
+    if(fastCandidate.publisher)fastUpdates.publisher=fastCandidate.publisher.slice(0,200);
+    if(fastCandidate.year)fastUpdates.publication_year=fastCandidate.year;
+    if(fastCandidate.tags?.length)fastUpdates.tags=fastCandidate.tags.slice(0,30);
+    if(fastCandidate.description&&!d.description)fastUpdates.description=fastCandidate.description;
+    fastUpdates.category=metadataCategoryFromTags(fastCandidate.tags||[],kind);
+    fastUpdates.metadata_source=fastCandidate.source+(fastCandidate.isbnMatch?' · ISBN exacto':' · título y autor');
+    fastUpdates.metadata_reviewed=false;
+   }
+   const{error}=await db.from('documents').update(fastUpdates).eq('id',id);
+   if(error)throw error;
+   return{...fastUpdates,candidate:fastCandidate,accepted:true,fastPath:true,possibleDuplicates:duplicates};
+  }
+ }
+ const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
  const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id),task=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
  try{
