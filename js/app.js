@@ -936,7 +936,13 @@ function metadataRankCandidate(candidate,context){
  const specific=metadataTitleIsSpecific(context.title)&&metadataTitleIsSpecific(candidate.title);
  let score;
  if(identifierMatch?.type==='publisher_number'){
+  // Exact publisher codes identify a specific edition and remain authoritative.
   score=titleScore>=.6?100:titleScore>=.35?96:92;
+ }else if(identifierMatch?.type==='isbn'){
+  // Some publishers reuse one ISBN across multiple works in a collection.
+  // An ISBN hit is accepted only when the title independently corroborates it.
+  const titleCompatible=metadataTitleIsSpecific(context.title)&&metadataTitleIsSpecific(candidate.title)&&titleScore>=.6;
+  score=titleCompatible?(titleScore>=.75?100:92):74;
  }else if(identifierMatch){
   const compatible=!metadataTitleIsSpecific(context.title)||titleScore>=.35;
   score=compatible?(titleScore>=.6?100:92):38;
