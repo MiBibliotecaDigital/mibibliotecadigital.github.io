@@ -15,3 +15,6 @@ La demo utiliza cuentas y documentos ficticios. No subir libros privados hasta t
 La entrega PDF usa PDF.js con JWT en Authorization y un Worker que consulta Supabase/PostgREST con RLS antes de transmitir desde R2. Se admiten solicitudes Range. No se generan URLs firmadas. La antigua función `r2-document-url` está retirada (HTTP 410).
 
 R2 debe permanecer privado. No habilitar Public Development URL ni Custom Domain público. Nunca guardar service-role keys ni credenciales R2 en GitHub o en el navegador.
+
+## URL maestra de un documento
+La URL canónica se construye como `https://<worker>.workers.dev/pdf/<document-uuid>`. No es una URL de R2. Si se abre por navegación directa sin encabezado Authorization, el Worker responde con redirección al sitio GitHub Pages y añade `?open=<document-uuid>`. Tras iniciar sesión, la interfaz intenta abrir ese documento; Supabase RLS y el Worker autorizan la lectura antes de transmitir bytes. La URL maestra no concede acceso por sí sola.
