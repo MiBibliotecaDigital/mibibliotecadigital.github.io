@@ -1,7 +1,7 @@
 import{createClient}from'https://esm.sh/@supabase/supabase-js@2';
 const c=window.BIBLIOTECA_CONFIG||{},live=!!(c.supabaseUrl&&c.supabaseAnonKey&&c.demoMode===false),db=live?createClient(c.supabaseUrl,c.supabaseAnonKey):null,root=document.querySelector('#app');
 let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],uploadInProgress=false,metadataInProgress=false,metadataCancelRequested=false,metadataQueueProgress={done:0,total:0,failed:0},favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all',selectedBookIds=new Set();
-const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set();let coverObserver=null,coverQueue=[],coverWorkers=0,coverPdfjsPromise=null;
+const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set();let coverObserver=null,coverQueue=[],coverWorkers=0,coverPdfjsPromise=null;let coverSessionEpoch=0;
 const sample=[['d1','Atlas del Archipielago Luminario','Elena Mar de Papel','Geografia imaginaria','atlas-luminario.pdf','sea'],['d2','Herbario de Arrecife Azul','Tomas del Invernadero','Naturaleza','herbario-arrecife-azul.pdf','leaf'],['d3','Cuaderno musical de Ciudad Resonante','Mara Afinacion','Musica','cuaderno-musica-ciudad.pdf','amber']].map(x=>({id:x[0],title:x[1],author:x[2],category:x[3],year:2026,pages:1,size:'PDF de muestra',provider:'demo',path:'/demo/pdfs/'+x[4],tone:x[5]}));
 const demoUsers=[{name:'Administracion de prueba',email:'admin@biblioteca.local',role:'admin',status:'Activo'},{name:'Lector de ejemplo',email:'demo@biblioteca.local',role:'reader',status:'Activo'}];
 const esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),label=r=>r==='admin'?'Administrador':r==='editor'?'Editor':'Lector';
@@ -559,6 +559,7 @@ function bindCoverThumbnails(){
  }
 }
 async function renderCoverThumbnail(id){
+ const epoch=coverSessionEpoch;
  let loadingTask=null;
  try{
   const record=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
@@ -575,6 +576,7 @@ async function renderCoverThumbnail(id){
   const context=canvas.getContext('2d',{alpha:false});if(!context)throw new Error('Canvas unavailable');
   context.fillStyle='#ffffff';context.fillRect(0,0,canvas.width,canvas.height);
   await page.render({canvasContext:context,viewport,background:'rgb(255,255,255)'}).promise;
+  if(epoch!==coverSessionEpoch)return;
   const dataUrl=canvas.toDataURL('image/jpeg',.82);coverThumbnailCache.set(id,dataUrl);applyCoverThumbnail(id,dataUrl);
   page.cleanup();canvas.width=1;canvas.height=1;
  }catch(error){
@@ -1699,7 +1701,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
  }finally{try{await task.destroy()}catch{}}
 }
 
-async function signOut(){if(live)await db.auth.signOut();if(coverObserver){coverObserver.disconnect();coverObserver=null}coverQueue=[];coverThumbnailCache.clear();coverThumbnailPending.clear();coverThumbnailFailed.clear();me=null;books=[];pendingDocs=[];users=[];collections=[];selectedFiles=[];role='reader';page='home';query='';sortBy='title';sortDir='asc';viewMode='grid';density=3;filterCollection='';filterCategory='';favs.clear();history=[];bookAdminStatus='all';selectedBookIds.clear();login()}
+async function signOut(){if(live)await db.auth.signOut();coverSessionEpoch++;if(coverObserver){coverObserver.disconnect();coverObserver=null}coverQueue=[];coverThumbnailCache.clear();coverThumbnailPending.clear();coverThumbnailFailed.clear();me=null;books=[];pendingDocs=[];users=[];collections=[];selectedFiles=[];role='reader';page='home';query='';sortBy='title';sortDir='asc';viewMode='grid';density=3;filterCollection='';filterCategory='';favs.clear();history=[];bookAdminStatus='all';selectedBookIds.clear();login()}
 async function startLibrary(){
   try{
     const {data:{session},error}=await db.auth.getSession();
