@@ -483,7 +483,12 @@ function editDocumentMetadata(id){
  };
  const save=async publish=>{
   const data=new FormData(m.querySelector('#metadata-form')),title=String(data.get('title')||'').trim(),year=String(data.get('publicationYear')||''),pages=String(data.get('pageCount')||''),kind=String(data.get('documentKind')||'unknown');
-  const identifierList=metadataParseIdentifierInput(String(data.get('bibliographicIdentifiers')||''));
+  const parsedIdentifiers=metadataParseIdentifierInput(String(data.get('bibliographicIdentifiers')||''));
+  const previousIdentifiers=d.bibliographicIdentifiers||[];
+  const identifierList=parsedIdentifiers.map(item=>{
+   const prior=previousIdentifiers.find(old=>old.type===item.type&&metadataNormalizeIdentifier(old.type,old.value)===item.normalized);
+   return prior?{...prior,value:item.value,normalized:item.normalized}:{...item,source:'manual'};
+  });
   const isbnText=String(data.get('isbn')||'').trim(),validIsbn=isbnText?metadataValidIsbn(isbnText):null;
   if(isbnText&&!validIsbn)return toast('El ISBN ingresado no supera la validación de dígitos.');
   if(validIsbn)identifierList.push({type:'isbn',value:validIsbn,normalized:validIsbn,source:'manual',pages:[],occurrences:0,confidence:100});
