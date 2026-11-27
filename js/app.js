@@ -240,7 +240,7 @@ function bookManagementRows(search='',status='all'){
     const duplicate=bookDuplicateMatch(b,all);
     const loadLabel=uploadStatusLabel(b.uploadStatus);
     const metaLabel=metadataStatusLabel(b.metadataStatus);
-    return '<tr><td><b>'+esc(b.title)+'</b><small>'+esc((b.authors||[]).join(', ')||'Autor sin identificar')+'</small>'+(duplicate?'<span class="duplicate-warning">Posible duplicado de: '+esc(duplicate.title)+'</span>':'')+'</td><td>'+esc(b.isbn||'—')+'</td><td>'+esc(collection?.name||'Sin colección')+'</td><td>'+(published?'<span class="pending-tag published-tag">Publicado</span>':'<span class="pending-tag">Borrador privado</span>')+'</td><td><span class="pending-tag">'+esc(loadLabel)+'</span></td><td><span class="pending-tag">'+esc(metaLabel)+'</span>'+(b.metadataError?'<small>'+esc(b.metadataError)+'</small>':'')+'</td><td>'+esc(b.category||'General')+'</td><td><button class="small-action" data-edit-doc="'+esc(b.id)+'">Editar ficha</button>'+(b.uploadStatus==='stored'?'<button class="small-action" data-open="'+esc(b.id)+'">Vista previa</button>':'')+'<button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button></td></tr>';
+    return '<tr data-book-id="'+esc(b.id)+'"><td><b>'+esc(b.title)+'</b><small>'+esc((b.authors||[]).join(', ')||'Autor sin identificar')+'</small>'+(duplicate?'<span class="duplicate-warning">Posible duplicado de: '+esc(duplicate.title)+'</span>':'')+'</td><td>'+esc(b.isbn||'—')+'</td><td>'+esc(collection?.name||'Sin colección')+'</td><td>'+(published?'<span class="pending-tag published-tag">Publicado</span>':'<span class="pending-tag">Borrador privado</span>')+'</td><td><span class="pending-tag">'+esc(loadLabel)+'</span></td><td><span class="pending-tag metadata-state">'+esc(metaLabel)+'</span>'+(b.metadataError?'<small>'+esc(b.metadataError)+'</small>':'')+'</td><td>'+esc(b.category||'General')+'</td><td><button class="small-action" data-edit-doc="'+esc(b.id)+'">Editar ficha</button>'+(b.uploadStatus==='stored'?'<button class="small-action" data-open="'+esc(b.id)+'">Vista previa</button>':'')+'<button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button></td></tr>';
   }).join('');
 }
 function booksPage(){
@@ -289,7 +289,7 @@ async function runMetadataQueue(ids=null,tokenOverride=null){
   if(!token)return toast('Tu sesión expiró. Inicia sesión nuevamente.');
   let request=db.from('documents').select('id,title')
     .eq('provider','r2').eq('metadata_reviewed',false)
-    .in('metadata_status',['pending','processing','partial','error'])
+    .eq('upload_status','stored').in('metadata_status',['pending','processing','partial','error'])
     .order('created_at',{ascending:true}).limit(500);
   if(Array.isArray(ids)&&ids.length)request=request.in('id',ids);
   const {data:documents,error}=await request;
