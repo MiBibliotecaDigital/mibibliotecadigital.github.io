@@ -275,7 +275,7 @@ function bindBookManagement(){
     const button=document.querySelector('#reconcile-storage');if(button)button.disabled=true;
     try{
       const result=await reconcileStorageFromWorker();
-      toast('Reconciliación: '+(result.recovered||0)+' PDF(s) recuperados, '+(result.completed||0)+' cargas verificadas, '+(result.filenamesRecovered||0)+' nombres originales recuperados'+(result.filenamesUnavailable?' · '+result.filenamesUnavailable+' nombres no disponibles':'')+'.');
+      toast(result.filenameRecoveryVersion===1?('Reconciliación: '+(result.recovered||0)+' PDF(s) recuperados, '+(result.completed||0)+' cargas verificadas, '+(result.filenamesRecovered||0)+' nombres originales recuperados'+(result.filenamesUnavailable?' · '+result.filenamesUnavailable+' nombres no disponibles':'')+'.'):'La pasarela todavía no publicó la recuperación de nombres. No se modificaron archivos; volvé a intentar cuando el Worker se actualice.');
       await loadUser(me);
     }catch(error){toast('No se pudo reconciliar R2: '+error.message);if(button)button.disabled=false}
   });
