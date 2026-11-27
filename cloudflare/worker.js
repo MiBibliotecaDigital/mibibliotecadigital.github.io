@@ -270,7 +270,7 @@ async function uploadPart(request, env, headers) {
   }
 }
 
-async function uploadComplete(request, env, headers) {
+async function uploadComplete(request, env, headers, ctx) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
   let body;
@@ -634,13 +634,224 @@ async function putLibraryThumbnail(request, env, headers, documentId) {
   return jsonReply({ ok: true, documentId, size: bytes.length }, 201, headers);
 }
 
+const COVER_PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs";
+const COVER_PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+const COVER_DAILY_BROWSER_BUDGET_MS = 8 * 60 * 1000;
+function coverJobKey(documentId) { return "cover-jobs/" + documentId + ".json"; }
+function coverUsageKey(day) { return "cover-jobs/usage-" + day + ".json"; }
+function encodeBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+async function createCoverSignature(env, documentId, key, expires) {
+  const secret = String(env.COVER_RENDER_SECRET || env.ISBNLAB_API_TOKEN || "");
+  if (secret.length < 16) throw new Error("Cover rendering signing secret is not configured");
+  const cryptoKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const payload = new TextEncoder().encode("cover-v1\n" + documentId + "\n" + key + "\n" + expires);
+  return encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, payload)));
+}
+async function verifyCoverSignature(request, env, documentId) {
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key") || "";
+  const expires = Number(url.searchParams.get("exp"));
+  const signature = url.searchParams.get("sig") || "";
+  const now = Math.floor(Date.now() / 1000);
+  if (!validUploadKey(key) || !Number.isSafeInteger(expires) || expires <= now ||
+      expires > now + 15 * 60 || !/^[A-Za-z0-9_-]{40,50}$/.test(signature)) return null;
+  const expected = await createCoverSignature(env, documentId, key, expires);
+  if (signature !== expected) return null;
+  const metadata = await env.BIBLIOTECA.head(key);
+  if (!metadata || metadata.customMetadata?.documentId !== documentId) return null;
+  return { key, metadata, expires, signature };
+}
+function makeCoverRenderHtml(sourceUrl) {
+  const script = [
+    "const pdfjs = await import(" + JSON.stringify(COVER_PDFJS_URL) + ");",
+    "pdfjs.GlobalWorkerOptions.workerSrc = " + JSON.stringify(COVER_PDFJS_WORKER_URL) + ";",
+    "const task = pdfjs.getDocument({url:" + JSON.stringify(sourceUrl) + ",disableAutoFetch:true,disableStream:true,rangeChunkSize:65536,isEvalSupported:false});",
+    "const pdf = await task.promise;",
+    "const page = await pdf.getPage(1);",
+    "const base = page.getViewport({scale:1});",
+    "const scale = Math.min(420/base.width,580/base.height,1.2);",
+    "const viewport = page.getViewport({scale});",
+    "const canvas = document.getElementById('cover');",
+    "canvas.width = Math.max(1,Math.ceil(viewport.width));",
+    "canvas.height = Math.max(1,Math.ceil(viewport.height));",
+    "const context = canvas.getContext('2d',{alpha:false});",
+    "context.fillStyle = '#ffffff'; context.fillRect(0,0,canvas.width,canvas.height);",
+    "await page.render({canvasContext:context,viewport,background:'rgb(255,255,255)'}).promise;",
+    "document.body.dataset.coverReady = '1';",
+    "page.cleanup(); await pdf.destroy();"
+  ].join("\n");
+  return [
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+    "<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{display:flex;justify-content:center;align-items:flex-start;min-width:420px;min-height:580px}canvas{display:block;max-width:420px;max-height:580px}</style>",
+    "</head><body><canvas id='cover'></canvas><script type='module'>",
+    "try { " + script + " } catch (error) { document.body.dataset.coverError = String(error && error.message || error); throw error; }",
+    "</script></body></html>"
+  ].join("");
+}
+async function serveInternalCoverRender(request, env, headers, documentId) {
+  if (request.method !== "GET") return reply("Method not allowed", 405, headers);
+  const access = await verifyCoverSignature(request, env, documentId);
+  if (!access) return reply("Not found", 404, headers);
+  const sourceUrl = "/__cover-source/" + documentId + "?key=" + encodeURIComponent(access.key) +
+    "&exp=" + access.expires + "&sig=" + encodeURIComponent(access.signature);
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return new Response(makeCoverRenderHtml(sourceUrl), { status: 200, headers });
+}
+async function serveInternalCoverSource(request, env, headers, documentId) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    headers.set("Allow", "GET, HEAD");
+    return reply("Method not allowed", 405, headers);
+  }
+  const access = await verifyCoverSignature(request, env, documentId);
+  if (!access) return reply("Not found", 404, headers);
+  const range = parseRange(request.headers.get("Range"), access.metadata.size);
+  if (range?.invalid) {
+    headers.set("Content-Range", "bytes */" + access.metadata.size);
+    return reply("Requested range is not satisfiable", 416, headers);
+  }
+  headers.set("Content-Type", "application/pdf");
+  headers.set("Accept-Ranges", "bytes");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  if (range) {
+    headers.set("Content-Length", String(range.length));
+    headers.set("Content-Range", "bytes " + range.start + "-" + range.end + "/" + access.metadata.size);
+  } else headers.set("Content-Length", String(access.metadata.size));
+  if (request.method === "HEAD") return new Response(null, { status: range ? 206 : 200, headers });
+  const object = await env.BIBLIOTECA.get(access.key, range ? { range: range.options } : undefined);
+  if (!object?.body) return reply("PDF not found", 404, headers);
+  return new Response(object.body, { status: range ? 206 : 200, headers });
+}
+async function renderAndStoreCover(env, documentId, pdfKey) {
+  if (!env.BROWSER || typeof env.BROWSER.quickAction !== "function") throw new Error("Cloudflare Browser Run binding BROWSER is unavailable");
+  const coverKey = "covers/" + documentId + ".jpg";
+  if (await env.BIBLIOTECA.head(coverKey)) return { alreadyExists: true, browserMsUsed: 0 };
+  const pdfMetadata = await env.BIBLIOTECA.head(pdfKey);
+  if (!pdfMetadata || pdfMetadata.customMetadata?.documentId !== documentId) throw new Error("Stored PDF metadata does not match the document");
+  const expires = Math.floor(Date.now() / 1000) + 10 * 60;
+  const signature = await createCoverSignature(env, documentId, pdfKey, expires);
+  const gateway = String(env.COVER_GATEWAY_ORIGIN || "").replace(/\/+$/, "");
+  if (!gateway) throw new Error("COVER_GATEWAY_ORIGIN is not configured");
+  const renderUrl = gateway + "/__cover-render/" + documentId + "?key=" + encodeURIComponent(pdfKey) +
+    "&exp=" + expires + "&sig=" + encodeURIComponent(signature);
+  const screenshot = await env.BROWSER.quickAction("screenshot", {
+    url: renderUrl, selector: "#cover",
+    viewport: { width: 440, height: 600, deviceScaleFactor: 1 },
+    gotoOptions: { waitUntil: "networkidle0", timeout: 60000 },
+    screenshotOptions: { type: "jpeg", quality: 76, optimizeForSpeed: true, omitBackground: false }
+  });
+  if (!screenshot?.ok) {
+    let detail = "";
+    try { detail = await screenshot.text(); } catch {}
+    throw new Error("Browser Run screenshot failed · HTTP " + (screenshot?.status || "unknown") + (detail ? " · " + detail.slice(0, 240) : ""));
+  }
+  const contentType = (screenshot.headers.get("Content-Type") || "").toLowerCase();
+  if (!contentType.includes("image/jpeg")) throw new Error("Browser Run returned unexpected image type: " + (contentType || "unknown"));
+  const bytes = new Uint8Array(await screenshot.arrayBuffer());
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) throw new Error("Browser Run did not return a valid JPEG");
+  if (bytes.length > 512 * 1024) throw new Error("Rendered cover exceeds 512 KiB");
+  const browserMsUsed = Math.max(0, Number(screenshot.headers.get("X-Browser-Ms-Used")) || 3000);
+  await env.BIBLIOTECA.put(coverKey, bytes, {
+    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=31536000, immutable" },
+    customMetadata: { documentId, generatedBy: "cloudflare-browser-run", sourceKey: pdfKey, page: "1" }
+  });
+  return { alreadyExists: false, size: bytes.length, browserMsUsed };
+}
+async function readCoverUsage(env, day) {
+  const object = await env.BIBLIOTECA.get(coverUsageKey(day));
+  if (!object) return { day, browserMsUsed: 0, generated: 0 };
+  try {
+    const value = await object.json();
+    return { day, browserMsUsed: Math.max(0, Number(value.browserMsUsed) || 0), generated: Math.max(0, Number(value.generated) || 0) };
+  } catch { return { day, browserMsUsed: 0, generated: 0 }; }
+}
+async function writeCoverUsage(env, usage) {
+  await env.BIBLIOTECA.put(coverUsageKey(usage.day), JSON.stringify({
+    day: usage.day, browserMsUsed: usage.browserMsUsed, generated: usage.generated,
+    updatedAt: new Date().toISOString(), dailyLimitMs: COVER_DAILY_BROWSER_BUDGET_MS
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+}
+async function getCoverRetryState(env, documentId) {
+  const object = await env.BIBLIOTECA.get(coverJobKey(documentId));
+  if (!object) return { attempts: 0, retryAfter: 0 };
+  try {
+    const value = await object.json();
+    return { attempts: Math.max(0, Number(value.attempts) || 0), retryAfter: Math.max(0, Number(value.retryAfter) || 0) };
+  } catch { return { attempts: 0, retryAfter: 0 }; }
+}
+async function markCoverFailure(env, documentId, error) {
+  const previous = await getCoverRetryState(env, documentId);
+  const attempts = previous.attempts + 1;
+  const delayMinutes = Math.min(60, 5 * (2 ** Math.min(attempts - 1, 4)));
+  await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+    documentId, attempts, retryAfter: Date.now() + delayMinutes * 60 * 1000,
+    lastError: String(error?.message || error).slice(0, 500), updatedAt: new Date().toISOString()
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+}
+async function processMissingCoverThumbnails(env, maxPerRun = 2) {
+  if (!env.BIBLIOTECA || !env.BROWSER) {
+    console.warn("Cover backfill skipped: R2 or Browser Run binding unavailable");
+    return;
+  }
+  const day = new Date().toISOString().slice(0, 10);
+  const usage = await readCoverUsage(env, day);
+  if (usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) {
+    console.info("Cover backfill paused at daily Browser Run safety budget", usage);
+    return;
+  }
+  const coverListing = await env.BIBLIOTECA.list({ prefix: "covers/", limit: 1000 });
+  const existingCovers = new Set((coverListing.objects || []).map(object => object.key));
+  const pdfListing = await env.BIBLIOTECA.list({ prefix: "library/", limit: 1000, include: ["customMetadata"] });
+  const candidates = (pdfListing.objects || []).filter(object =>
+    validUploadKey(object.key) && UUID_RE.test(object.customMetadata?.documentId || "") &&
+    !existingCovers.has("covers/" + object.customMetadata.documentId + ".jpg")
+  );
+  let attempted = 0, generated = 0, failed = 0;
+  for (const candidate of candidates) {
+    if (attempted >= maxPerRun || usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) break;
+    const documentId = candidate.customMetadata.documentId;
+    const retry = await getCoverRetryState(env, documentId);
+    if (retry.retryAfter > Date.now()) continue;
+    attempted++;
+    try {
+      const result = await renderAndStoreCover(env, documentId, candidate.key);
+      usage.browserMsUsed += result.browserMsUsed || 0;
+      if (!result.alreadyExists) { usage.generated++; generated++; }
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
+      await writeCoverUsage(env, usage);
+      existingCovers.add("covers/" + documentId + ".jpg");
+    } catch (error) {
+      failed++;
+      console.error("Server-side cover generation failed", { documentId, key: candidate.key, error: String(error) });
+      await markCoverFailure(env, documentId, error);
+      await writeCoverUsage(env, usage);
+    }
+  }
+  console.info("Server-side cover backfill batch", {
+    day, scanned: candidates.length, attempted, generated, failed,
+    browserMsUsed: usage.browserMsUsed, dailyBudgetMs: COVER_DAILY_BROWSER_BUDGET_MS
+  });
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const appOrigin = env.APP_ORIGIN || APP_ORIGIN_FALLBACK;
     const origin = request.headers.get("Origin");
     const headers = corsHeaders(origin, appOrigin);
+    const requestPath = new URL(request.url).pathname;
+    const internalCoverRoute = /^\/__cover-(?:render|source)\//.test(requestPath);
 
-    if (origin && origin !== appOrigin) {
+    if (origin && origin !== appOrigin && !internalCoverRoute) {
       return reply("Origin not allowed", 403, headers);
     }
 
@@ -650,12 +861,22 @@ export default {
     }
 
     const pathname = new URL(request.url).pathname;
+    const renderPageMatch = pathname.match(/^\/__cover-render\/([^/]+)$/);
+    if (renderPageMatch && UUID_RE.test(renderPageMatch[1])) {
+      try { return await serveInternalCoverRender(request, env, headers, renderPageMatch[1]); }
+      catch (error) { console.error("Internal cover render page failed", error); return reply("Cover render page unavailable", 502, headers); }
+    }
+    const renderSourceMatch = pathname.match(/^\/__cover-source\/([^/]+)$/);
+    if (renderSourceMatch && UUID_RE.test(renderSourceMatch[1])) {
+      try { return await serveInternalCoverSource(request, env, headers, renderSourceMatch[1]); }
+      catch (error) { console.error("Internal cover PDF source failed", error); return reply("Cover PDF source unavailable", 502, headers); }
+    }
     if (pathname === "/catalog/google-books" && request.method === "GET") return lookupGoogleBooks(request, env, headers);
     if (pathname === "/catalog/isbnlab" && request.method === "GET") return lookupIsbnLabBook(request, env, headers);
     if (pathname === "/catalog/melos" && request.method === "GET") return lookupMelosProduct(request, env, headers);
     if (pathname === "/upload/start" && request.method === "POST") return uploadStart(request, env, headers);
     if (pathname === "/upload/part" && request.method === "PUT") return uploadPart(request, env, headers);
-    if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers);
+    if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers, ctx);
     if (pathname === "/upload/abort" && request.method === "DELETE") return uploadAbort(request, env, headers);
 
 function normalizeMelosCode(value) {
@@ -1400,5 +1621,11 @@ async function lookupMelosProduct(request, env, headers) {
       console.error("PDF gateway failure", error);
       return reply("Unable to retrieve document", 502, headers);
     }
+  },
+
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(processMissingCoverThumbnails(env, 2).catch(error => {
+      console.error("Scheduled cover backfill failed", error);
+    }));
   }
 };
