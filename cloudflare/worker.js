@@ -140,8 +140,7 @@ async function uploadStart(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
   const fileSize = Number(request.headers.get("X-File-Size"));
-  if (!Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE ||
-      (fileFingerprint != null && (typeof fileFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(fileFingerprint)))) {
+  if (!Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE) {
     return reply("Invalid file size. Maximum supported size is 2 GiB.", 413, headers);
   }
   const key = "library/" + crypto.randomUUID() + ".pdf";
@@ -207,7 +206,8 @@ async function uploadComplete(request, env, headers) {
   if (!validUploadKey(key) || typeof uploadId !== "string" || !uploadId ||
       uploadId.length > 512 || !metadata || !Array.isArray(parts) ||
       parts.length < 1 || parts.length > 10000 ||
-      !Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE) {
+      !Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE ||
+      (fileFingerprint != null && (typeof fileFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(fileFingerprint)))) {
     return reply("Invalid upload completion data.", 400, headers);
   }
   const normalizedParts = [...parts].sort((a, b) => Number(a.partNumber) - Number(b.partNumber));
