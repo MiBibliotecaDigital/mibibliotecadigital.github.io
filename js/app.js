@@ -988,17 +988,80 @@ async function lookupBibliographicCandidate(contexts){
  for(const context of contexts){if(!context.title&&!context.isbn)continue;try{const ranked=(await openLibrarySearch(context)).map(x=>metadataRankCandidate(x,context)).sort((a,b)=>b.score-a.score);if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];if(best?.score>=90&&(best.isbnMatch||best.titleSimilarity>=.88&&best.authorMatch))return best}catch(e){console.info('Open Library lookup unavailable:',e?.message||e)}if(best?.score>=90)break}
  return best;
 }
-function metadataDetectDocumentKind(filename,text,catalogMatch){
- const s=metadataTextKey(String(filename||'')+' '+String(text||'').slice(0,7000));
- if(catalogMatch&&catalogMatch.score>=90&&catalogMatch.printType==='BOOK')return'book';
+function metadataDetectDocumentKind(filename,text,catalogMatch,identifiers=[]){
+ const s=metadataTextKey(String(filename||'')+' '+String(text||'').slice(0,16000));
+ const types=new Set((identifiers||[]).map(x=>x.type));
+ if(types.has('ismn')||types.has('publisher_number'))return'music_score';
+ if(types.has('issn'))return'periodical';
+ if(types.has('doi')&&/\b(abstract|journal|article|articulo|research paper|preprint)\b/.test(s))return'article';
  if(/\b(factura|invoice|recibo|presupuesto|contrato|curriculum|curriculum vitae|diapositivas|presentacion|formulario|certificado|extracto bancario|orden de compra)\b/.test(s))return'other';
- if(/\b(revista|magazine|journal|boletin|newsletter|issn|periodical)\b/.test(s))return'periodical';
+ if(/\b(revista|magazine|journal|boletin|newsletter|periodical|issn)\b/.test(s))return'periodical';
  if(/\b(tesis|dissertation|tesina|trabajo final|doctoral thesis)\b/.test(s))return'academic';
  if(/\b(articulo|article|research paper|preprint|doi 10)\b/.test(s))return'article';
- if(/\b(partitura|sheet music|score|songbook|cancionero)\b/.test(s))return'music_score';
+ if(/\b(partitura|sheet music|score|songbook|cancionero|coros mixtos|coro|piano|pianoforte|guitarra|guitarras|guitar|violin|viola|violoncello|violonchelo|flauta|flute|organ|organo|clarinete|clarinet|saxofon|saxophone|malambo|zamba|vidalita|chacarera|milonga|gymnopedie|clair de lune|nocturne|nocturno|preludio|prelude|sonata|suite|etude|estudio musical|vals|waltz|mazurka|polonaise)\b/.test(s))return'music_score';
  if(/\b(manual de usuario|user manual|instrucciones de uso|reglamento|guia de usuario)\b/.test(s))return'manual';
  if(/\b(diccionario|enciclopedia|atlas|catalogo)\b/.test(s))return'reference';
- return catalogMatch&&catalogMatch.score>=90?'book':'unknown';
+ if(catalogMatch&&catalogMatch.score>=92&&catalogMatch.printType==='BOOK')return'book';
+ return'unknown';
+}
+function metadataBuildTags({filename='',text='',kind='unknown',catalog=null,accepted=false,embeddedTags=[],publisher='',identifiers=[]}){
+ const out=[],seen=new Set(),add=value=>{
+  const tag=String(value||'').replace(/\s+/g,' ').trim(),key=metadataTextKey(tag);
+  if(!tag||!key||seen.has(key)||tag.length>60)return;
+  seen.add(key);out.push(tag);
+ };
+ if(accepted&&catalog)for(const tag of catalog.tags||[])add(tag);
+ for(const tag of embeddedTags||[])add(tag);
+ if(kind==='music_score'){add('Música');add('Partituras')}
+ if(kind==='periodical')add('Publicaciones periódicas');
+ if(kind==='article')add('Artículos');
+ if(kind==='academic')add('Trabajos académicos');
+ if(kind==='manual')add('Manuales y guías');
+ if(kind==='reference')add('Obras de referencia');
+ const s=metadataTextKey([filename,text.slice(0,18000),(catalog?.tags||[]).join(' ')].join(' '));
+ const instruments=[
+  [/\b(piano|pianoforte)\b/,'Piano'],
+  [/\b(guitarra|guitarras|guitar|guitars)\b/,'Guitarra'],
+  [/\b(violin|viola|violoncello|violonchelo|cello)\b/,'Cuerdas'],
+  [/\b(flauta|flute|piccolo)\b/,'Vientos · flauta'],
+  [/\b(clarinete|clarinet|oboe|fagot|bassoon)\b/,'Vientos · maderas'],
+  [/\b(trompeta|trumpet|trombon|trombone|corno|horn)\b/,'Vientos · metales'],
+  [/\b(organ|organo)\b/,'Órgano'],
+  [/\b(voz|vocal|canto|soprano|alto|tenor|baritono|bajo|coral|coro|coros)\b/,'Voz y coro']
+ ];
+ if(kind==='music_score')for(const [re,tag] of instruments)if(re.test(s))add(tag);
+ const genres=[
+  [/\b(jazz|bebop|swing|ragtime)\b/,'Jazz'],
+  [/\b(tango|milonga)\b/,'Tango'],
+  [/\b(zamba|malambo|vidalita|chacarera|folklore|folclore|gato|cueca)\b/,'Folklore argentino'],
+  [/\b(baroque|barroco)\b/,'Barroco'],
+  [/\b(classical|clasica|clasico|musica clasica)\b/,'Música clásica'],
+  [/\b(romantic|romantico|romantica)\b/,'Romanticismo'],
+  [/\b(blues)\b/,'Blues']
+ ];
+ for(const [re,tag] of genres)if(re.test(s))add(tag);
+ if(publisher)add(publisher);
+ for(const id of identifiers||[])if(id.type==='publisher_number'&&/^BA\b/i.test(id.value))add('Bärenreiter');
+ return out.slice(0,24);
+}
+function metadataCategoryFromTags(tags,kind){
+ const s=metadataTextKey((tags||[]).join(' '));
+ if(kind==='music_score'){
+  if(s.includes('guitarra'))return'Partituras para guitarra';
+  if(s.includes('piano'))return'Partituras para piano';
+  if(s.includes('voz y coro'))return'Partituras corales';
+  return'Partituras';
+ }
+ if(s.includes('guitarra')||s.includes('guitar'))return'Partituras para guitarra';
+ if(s.includes('piano'))return'Música para piano';
+ if(s.includes('jazz'))return'Jazz';
+ if(s.includes('musica')||s.includes('music'))return'Música';
+ if(kind==='academic')return'Trabajos académicos';
+ if(kind==='article')return'Artículos';
+ if(kind==='periodical')return'Publicaciones periódicas';
+ if(kind==='manual')return'Manuales y guías';
+ if(kind==='reference')return'Obras de referencia';
+ return'General';
 }
 function metadataKindLabel(kind){return({book:'Libro',academic:'Tesis / trabajo académico',article:'Artículo',music_score:'Partitura / cancionero',periodical:'Revista / publicación periódica',manual:'Manual / guía',reference:'Obra de referencia',other:'Otro tipo de documento',unknown:'Sin clasificar'})[kind]||'Sin clasificar'}
 function metadataMatchLabel(status,confidence){const score=confidence===null||confidence===undefined?'':(' · '+confidence+'%');return({matched:'Catálogo coincidente'+score,review:'Coincidencia para confirmar'+score,unmatched:'Sin coincidencia',non_book:'Posible documento no bibliográfico',duplicate:'Posible duplicado'+score})[status]||'Sin revisar'}
