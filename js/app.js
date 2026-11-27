@@ -585,6 +585,17 @@ function metadataTitleSimilarity(a,b){
   const uniqueA=[...new Set(aa)],uniqueB=[...new Set(bb)],common=uniqueA.filter(x=>uniqueB.includes(x)).length;
   return common/Math.max(uniqueA.length,uniqueB.length);
 }
+let openLibraryRequestChain=Promise.resolve(),openLibraryLastRequest=0;
+async function openLibraryFetch(url){
+  const request=openLibraryRequestChain.then(async()=>{
+    const wait=Math.max(0,1000-(Date.now()-openLibraryLastRequest));
+    if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+    openLibraryLastRequest=Date.now();
+    return fetch(url,{signal:AbortSignal.timeout(8000)});
+  });
+  openLibraryRequestChain=request.catch(()=>null);
+  return request;
+}
 async function lookupIsbnMetadata(isbn){
   const clean=metadataValidIsbn(isbn);
   if(!clean)return null;
@@ -607,14 +618,9 @@ async function lookupIsbnMetadata(isbn){
     }
   }catch(error){console.info('Google Books ISBN lookup unavailable:',error?.message||error)}
   try{
-    const response=await fetch('https://openlibrary.org/isbn/'+encodeURIComponent(clean)+'.json',{signal:timeout()});
+    const response=await openLibraryFetch('https://openlibrary.org/isbn/'+encodeURIComponent(clean)+'.json');
     if(response.ok){
       const v=await response.json(),authors=[];
-      for(const item of (v.authors||[]).slice(0,5)){
-        if(item?.name){authors.push(String(item.name));continue}
-        const key=item?.key;if(!key)continue;
-        try{const ar=await fetch('https://openlibrary.org'+key+'.json',{signal:timeout()});if(ar.ok){const a=await ar.json();if(a.name)authors.push(a.name)}}catch{}
-      }
       const subjects=(v.subjects||[]).map(x=>typeof x==='string'?x:(x?.name||'')).filter(Boolean).slice(0,30);
       const date=String(v.publish_date||'').match(/(?:19|20)\d{2}/);
       return {title:v.title||'',authors,publisher:(v.publishers||[]).map(x=>typeof x==='string'?x:x?.name).filter(Boolean)[0]||'',year:date?Number(date[0]):null,description:typeof v.description==='string'?v.description:String(v.description?.value||''),tags:subjects,pageCount:v.number_of_pages||null,source:'Open Library',match:'isbn'};
