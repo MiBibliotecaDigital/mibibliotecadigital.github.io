@@ -1,7 +1,7 @@
 import{createClient}from'https://esm.sh/@supabase/supabase-js@2';
 const c=window.BIBLIOTECA_CONFIG||{},live=!!(c.supabaseUrl&&c.supabaseAnonKey&&c.demoMode===false),db=live?createClient(c.supabaseUrl,c.supabaseAnonKey):null,root=document.querySelector('#app');
 let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],uploadInProgress=false,metadataInProgress=false,metadataCancelRequested=false,metadataQueueProgress={done:0,total:0,failed:0},favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all',selectedBookIds=new Set();
-const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set(),coverThumbnailPromises=new Map();let coverObserver=null,coverQueue=[],coverWorkers=0,coverPdfjsPromise=null;let coverSessionEpoch=0;
+const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set(),coverThumbnailPromises=new Map();let coverObserver=null,coverQueue=[],coverWorkers=0,coverPdfjsPromise=null;let coverSessionEpoch=0,coverBackfillStarted=false;
 const sample=[['d1','Atlas del Archipielago Luminario','Elena Mar de Papel','Geografia imaginaria','atlas-luminario.pdf','sea'],['d2','Herbario de Arrecife Azul','Tomas del Invernadero','Naturaleza','herbario-arrecife-azul.pdf','leaf'],['d3','Cuaderno musical de Ciudad Resonante','Mara Afinacion','Musica','cuaderno-musica-ciudad.pdf','amber']].map(x=>({id:x[0],title:x[1],author:x[2],category:x[3],year:2026,pages:1,size:'PDF de muestra',provider:'demo',path:'/demo/pdfs/'+x[4],tone:x[5]}));
 const demoUsers=[{name:'Administracion de prueba',email:'admin@biblioteca.local',role:'admin',status:'Activo'},{name:'Lector de ejemplo',email:'demo@biblioteca.local',role:'reader',status:'Activo'}];
 const esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),label=r=>r==='admin'?'Administrador':r==='editor'?'Editor':'Lector';
@@ -9,6 +9,7 @@ function toast(s){let n=document.createElement('div');n.className='toast';n.text
 function login(msg=''){window.__BIBLIOTECA_READY__=true;root.innerHTML='<div class="demo-strip">'+(live?'ACCESO PRIVADO · SUPABASE':'MODO DEMOSTRACION · USUARIOS FICTICIOS')+'</div><main class="login"><section class="art" aria-hidden="true"><div class="brand"><b>B</b></div></section><section class="login-side"><form id="login"><div class="mark">B</div><h2>Bienvenido</h2><p>Ingresa para continuar a tu biblioteca.</p>'+(msg?'<div class="notice">'+esc(msg)+'</div>':'')+'<label>Correo o nombre de usuario<input name="email" type="text" autocomplete="username" required></label><label>Contrasena<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Ingresar →</button>'+(live?'':'<div class="demo-box"><b>CUENTAS FICTICIAS</b>Administrador: admin@biblioteca.local <code>admin1234</code>Lector: demo@biblioteca.local <code>demo1234</code><small>Solo para probar la interfaz. No son cuentas reales ni protegen datos privados.</small></div>')+'</form></section></main>';document.querySelector('#login').onsubmit=signIn}
 async function signIn(e){e.preventDefault();let f=new FormData(e.currentTarget),email=String(f.get('email')).toLowerCase(),password=String(f.get('password'));if(!live){let a=email==='admin@biblioteca.local'&&password==='admin1234'?['Administracion de prueba','admin']:email==='demo@biblioteca.local'&&password==='demo1234'?['Lector de ejemplo','reader']:null;if(!a)return login('Credenciales incorrectas. Usa las cuentas de prueba.');me={email,name:a[0]};role=a[1];books=sample;users=demoUsers;return render()}let data,error;if(email.includes('@')){({data,error}=await db.auth.signInWithPassword({email,password}));if(error)return login(error.message);await loadUser(data.user)}else{const result=await db.functions.invoke('username-login',{body:{username:email,password}});if(result.error)return login('Usuario o contraseña incorrectos.');const session=result.data;if(!session?.access_token||!session?.refresh_token)return login('Respuesta de acceso no válida.');const saved=await db.auth.setSession({access_token:session.access_token,refresh_token:session.refresh_token});if(saved.error)return login(saved.error.message);await loadUser(saved.data.user)}}
 async function loadUser(u){let {data:p,error}=await db.from('profiles').select('full_name,username,role,status').eq('id',u.id).single();if(error||!p||p.status!=='active'){await db.auth.signOut();return login('Cuenta sin perfil activo.')}me={id:u.id,email:u.email,username:p.username||'',name:p.full_name||u.email};role=p.role;let docQuery=db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,file_fingerprint,provider,demo_path,is_published,description,collection_id,tags,isbn,publisher,metadata_source,metadata_reviewed,upload_status,metadata_status,metadata_error,original_filename,uploaded_by,metadata_match_status,metadata_confidence,metadata_candidate,document_kind,metadata_checked_at,bibliographic_identifiers,metadata_evidence').order('title');if(role!=='admin')docQuery=docQuery.eq('is_published',true);let {data:d,error:de}=await docQuery;if(de){books=[];pendingDocs=[];toast(de.message)}else{const rows=d||[];const mapDoc=(x,i)=>({id:x.id,title:metadataTitleClean(x.title),author:(x.authors||[]).join(', '),authors:x.authors||[],year:x.publication_year||'',category:x.category||'General',pages:x.page_count||'—',pageCount:x.page_count||0,size:x.size_bytes?Math.round(x.size_bytes/1024)+' KB':'—',sizeBytes:x.size_bytes||0,fileFingerprint:x.file_fingerprint||null,provider:x.provider,path:x.demo_path||'',description:x.description||'',collectionId:x.collection_id||'',tags:x.tags||[],isbn:x.isbn||'',publisher:x.publisher||'',metadataSource:x.metadata_source||'filename',metadataReviewed:!!x.metadata_reviewed,uploadStatus:x.upload_status||'stored',metadataStatus:x.metadata_status||'pending',metadataError:x.metadata_error||'',originalFilename:x.original_filename||'',metadataMatchStatus:x.metadata_match_status||'unmatched',metadataConfidence:x.metadata_confidence??null,metadataCandidate:x.metadata_candidate||null,bibliographicIdentifiers:Array.isArray(x.bibliographic_identifiers)?x.bibliographic_identifiers:[],documentKind:x.document_kind||'unknown',metadataCheckedAt:x.metadata_checked_at||null,metadataEvidence:x.metadata_evidence||{},uploadedBy:x.uploaded_by||null,tone:['sea','leaf','amber'][i%3]});books=rows.filter(x=>x.is_published).map(mapDoc);pendingDocs=role==='admin'?rows.filter(x=>!x.is_published).map(mapDoc):[];}let {data:cs}=await db.from('collections').select('id,name,description').order('name');collections=cs||[];if(role==='admin'){const {data:ud,error:ue}=await db.functions.invoke('admin-users',{body:{action:'list'}});if(ue){users=[];let detail=ue.message||'Error desconocido';try{const payload=await ue.context?.json?.();if(payload?.error)detail=payload.error}catch{}toast('No se pudo cargar la lista de usuarios: '+detail)}else users=ud?.users||[]}else users=[];render();
+  startAdminCoverBackfill();
   const pendingDocument=new URLSearchParams(window.location.search).get('open');
   if(pendingDocument){
     const cleanUrl=new URL(window.location.href);cleanUrl.searchParams.delete('open');
@@ -574,7 +575,7 @@ async function renderCoverThumbnail(id){
   if(error)throw error;if(!session?.access_token)throw new Error('Session unavailable for cover rendering');
   const gateway=c.pdfGatewayUrl.replace(/\/+$/,'');
   const authorization={Authorization:'Bearer '+session.access_token};
-  const saved=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id),{headers:authorization,cache:'no-cache'});
+  const saved=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id),{headers:authorization});
   if(saved.ok){
    const blob=await saved.blob();if(epoch!==coverSessionEpoch)return false;
    const imageUrl=URL.createObjectURL(blob);coverThumbnailCache.set(id,imageUrl);applyCoverThumbnail(id,imageUrl);return true;
@@ -607,12 +608,29 @@ async function renderCoverThumbnail(id){
  }
 }
 function drainCoverQueue(){
- while(coverWorkers<2&&coverQueue.length){
+ while(coverWorkers<4&&coverQueue.length){
   const job=coverQueue.shift();coverWorkers++;
   renderCoverThumbnail(job.id).then(result=>job.resolve(result)).catch(()=>job.resolve(false)).finally(()=>{
    coverThumbnailPending.delete(job.id);coverThumbnailPromises.delete(job.id);coverWorkers--;drainCoverQueue();
   });
  }
+}
+function startAdminCoverBackfill(){
+ if(coverBackfillStarted||role!=='admin'||!live)return;
+ coverBackfillStarted=true;
+ const ids=books.filter(x=>x.provider==='r2').map(x=>x.id);
+ if(!ids.length)return;
+ const total=ids.length;let complete=0,generated=0,failed=0;
+ // Begin after the first paint so the initial catalogue remains responsive.
+ setTimeout(()=>{
+  Promise.all(ids.map(id=>queueCoverThumbnail(id).then(ok=>{
+   complete++;if(ok)generated++;else failed++;
+   if(complete===total)console.info('Cover backfill finished:',{total,generated,failed});
+  }).catch(error=>{
+   complete++;failed++;
+   if(complete===total)console.info('Cover backfill finished:',{total,generated,failed,error:String(error)});
+  })));
+ },700);
 }
 async function generateAllCoverThumbnails(){
  const button=document.querySelector('#generate-cover-thumbnails'),status=document.querySelector('#cover-batch-status');
