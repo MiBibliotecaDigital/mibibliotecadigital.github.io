@@ -23,7 +23,7 @@ GitHub Settings > Pages > Deploy from a branch > main > /(root). URL: https://mi
 ## Entrega protegida de PDF
 El navegador no recibe una URL firmada de R2. PDF.js envía el JWT de Supabase en el encabezado Authorization a la pasarela Worker. La pasarela consulta el registro del documento mediante PostgREST con ese JWT; RLS determina si el usuario activo tiene permiso. Solo entonces transmite el objeto desde el binding privado R2. Las respuestas admiten Range/206 para documentos grandes y llevan Cache-Control no-store y X-Robots-Tag noindex.
 
-Esto impide el acceso sin sesión válida y evita exponer URLs públicas o URLs temporales de R2. No es DRM: un usuario autorizado puede guardar, imprimir, capturar o copiar el contenido que recibe. No subir documentos reales hasta desplegar y probar el backend.
+Esto impide el acceso sin sesión válida y evita exponer URLs públicas o URLs temporales de R2. No es DRM: un usuario autorizado puede guardar, imprimir, capturar o copiar el contenido que recibe. No subir documentos reales hasta probar también el nuevo flujo de carga del panel de administrador con un PDF de prueba.
 
 ## Cookies y sesión
 La autenticación usa el token de sesión de Supabase en un encabezado HTTP, no una cookie compartida entre github.io y workers.dev. El token no se coloca en la URL. La autorización se vuelve a comprobar en cada petición de documento.
