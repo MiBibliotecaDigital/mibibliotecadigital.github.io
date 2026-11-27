@@ -218,11 +218,18 @@ async function uploadComplete(request, env, headers) {
     console.error("R2 multipart completion failed", error);
     return reply("The PDF could not be assembled. Retry the upload.", 400, headers);
   }
-  if (object.size !== fileSize ||
-      object.customMetadata?.expectedSize !== String(fileSize) ||
-      object.customMetadata?.uploadedBy !== auth.user.id) {
+  // R2's committed object size is the authoritative integrity check.
+  // Multipart customMetadata is useful metadata, but must not be a gate for
+  // accepting a complete object: some R2 completion responses omit it.
+  const stored = await env.BIBLIOTECA.head(key);
+  if (!stored || stored.size !== fileSize || object.size !== fileSize) {
     await env.BIBLIOTECA.delete(key);
-    return reply("The uploaded file failed its integrity check.", 400, headers);
+    console.error("Upload size verification failed", {
+      expectedSize: fileSize,
+      completedSize: object?.size ?? null,
+      storedSize: stored?.size ?? null
+    });
+    return reply("The uploaded PDF size does not match the selected file. The incomplete object was removed.", 400, headers);
   }
 
   const document = {
