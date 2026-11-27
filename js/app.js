@@ -1484,37 +1484,6 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
  const originalFilename=String(d.originalFilename||d.original_filename||'').trim();
  const filename=metadataParseFilename(originalFilename||d.title||'');
  const existingIdentifiers=Array.isArray(d.bibliographicIdentifiers)?d.bibliographicIdentifiers:(Array.isArray(d.bibliographic_identifiers)?d.bibliographic_identifiers:[]);
- const fastKind=metadataDetectDocumentKind(originalFilename,'',null,existingIdentifiers);
- // Fast path only when the filename already contains enough bibliographic context.
- if(originalFilename&&metadataTitleIsSpecific(filename.title)&&!['music_score','periodical','article'].includes(fastKind)){
-  const storedIsbn=metadataValidIsbn(d.isbn),fastContext={title:filename.title,authors:filename.authors,isbn:storedIsbn,publisher:d.publisher||'',year:d.year||d.publication_year||null,identifiers:existingIdentifiers};
-  const fastCandidate=await lookupBibliographicCandidate([fastContext],existingIdentifiers,fastKind);
-  if(metadataCandidateAccepted(fastCandidate)){
-   const kind=metadataDetectDocumentKind(originalFilename,'',fastCandidate,existingIdentifiers),duplicateBase={id,title:fastCandidate.title,authors:fastCandidate.authors,isbn:storedIsbn||fastCandidate.isbns?.[0]||d.isbn,bibliographicIdentifiers:existingIdentifiers,fileFingerprint:d.fileFingerprint||d.file_fingerprint||null};
-   const duplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
-   const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
-   const fastTags=metadataBuildTags({filename:originalFilename,kind,catalog:fastCandidate,accepted:true,embeddedTags:d.tags||[],publisher:fastCandidate.publisher,identifiers:existingIdentifiers});
-   const fastAutoPublished=Number(fastCandidate.score)===100&&!duplicates.length&&(d.uploadStatus||d.upload_status)==='stored';
-   const fastEvidence=d.metadataEvidence||d.metadata_evidence||{};
-   const fastUpdates={metadata_error:duplicates.length?'Posible coincidencia con "'+String(duplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.':null,metadata_checked_at:new Date().toISOString(),metadata_match_status:duplicates.length?'duplicate':'matched',metadata_confidence:fastCandidate.score,metadata_candidate:null,document_kind:kind,metadata_status:'complete',metadata_evidence:{...fastEvidence,autoPublication:{eligible:Number(fastCandidate.score)===100,published:fastAutoPublished,reason:fastAutoPublished?'Confianza de metadatos 100/100: publicación automática':duplicates.length?'Bloqueado por posible duplicado':Number(fastCandidate.score)===100?'El PDF todavía no está guardado':'La confianza no llegó a 100/100'}}};
-   if(fastAutoPublished)fastUpdates.is_published=true;
-   if(!manual){
-    fastUpdates.title=fastCandidate.title.slice(0,300);
-    if(fastCandidate.authors?.length)fastUpdates.authors=fastCandidate.authors.slice(0,20);
-    if(storedIsbn||fastCandidate.isbns?.[0])fastUpdates.isbn=storedIsbn||fastCandidate.isbns[0];
-    if(fastCandidate.publisher)fastUpdates.publisher=fastCandidate.publisher.slice(0,200);
-    if(fastCandidate.year)fastUpdates.publication_year=fastCandidate.year;
-    if(fastTags.length)fastUpdates.tags=fastTags;
-    if(fastCandidate.description&&!d.description)fastUpdates.description=fastCandidate.description;
-    fastUpdates.category=metadataCategoryFromTags(fastTags,kind);
-    fastUpdates.metadata_source='filename';
-    fastUpdates.metadata_reviewed=false;
-   }
-   const{error}=await db.from('documents').update(fastUpdates).eq('id',id);
-   if(error)throw error;
-   return{...fastUpdates,candidate:fastCandidate,accepted:true,fastPath:true,possibleDuplicates:duplicates};
-  }
- }
  const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
  const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);
