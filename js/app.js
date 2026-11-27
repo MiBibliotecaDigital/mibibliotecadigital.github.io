@@ -335,6 +335,7 @@ async function lookupIsbnMetadata(isbn){
       const v=await response.json();
       const authors=[];
       for(const item of (v.authors||[]).slice(0,5)){
+        if(item?.name){authors.push(String(item.name));continue}
         const key=item?.key;
         if(!key)continue;
         try{const ar=await fetch('https://openlibrary.org'+key+'.json',{signal:timeout()});if(ar.ok){const a=await ar.json();if(a.name)authors.push(a.name)}}catch{}
