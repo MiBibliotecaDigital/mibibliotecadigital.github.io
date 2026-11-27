@@ -712,7 +712,7 @@ function melosExtractProduct(html, productUrl, expectedCode) {
   if (!tags.length && tagsText) tags.push(tagsText);
   const barcode = value(["Cod de Barras", "Código de Barras", "Barcode", "EAN"]);
   const collaborators = rowValues(["Colaboradores"])
-    .flatMap(x => x.split(/\s*[;,]\s*/)).map(x => x.trim()).filter(Boolean);
+    .flatMap(x => x.split(/\s*(?:\n|;|\|)\s*/)).map(x => x.trim()).filter(Boolean);
   const pageCount = value(["Cantidad de paginas", "Cantidad de páginas", "Páginas"]);
   const attributes = rows.map(row => ({ label: row.label, value: row.value }));
   const shippingWeight = (text.match(/\bPeso\s+(\d+(?:[.,]\d+)?\s*kg)\b/i) || [])[1] || "";
