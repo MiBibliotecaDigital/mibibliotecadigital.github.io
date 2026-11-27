@@ -593,9 +593,11 @@ async function renderCoverThumbnail(id){
   if(epoch!==coverSessionEpoch)return false;
   const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('Could not encode thumbnail')),'image/jpeg',.82));
   if(blob.size>512*1024)throw new Error('Thumbnail exceeds 512 KiB');
+  const imageUrl=URL.createObjectURL(blob);coverThumbnailCache.set(id,imageUrl);applyCoverThumbnail(id,imageUrl);
   const stored=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id),{method:'PUT',headers:{...authorization,'Content-Type':'image/jpeg'},body:blob});
-  if(!stored.ok)throw new Error('Could not save thumbnail · HTTP '+stored.status);
-  const imageUrl=URL.createObjectURL(blob);coverThumbnailCache.set(id,imageUrl);applyCoverThumbnail(id,imageUrl);page.cleanup();return true;
+  page.cleanup();
+  if(!stored.ok){console.info('Cover is visible for this session but is not yet persisted in R2 · HTTP '+stored.status);return false}
+  return true;
  }catch(error){
   if(epoch===coverSessionEpoch){coverThumbnailFailed.add(id);console.info('Cover thumbnail unavailable for '+id+':',error?.message||error)}
   return false;
