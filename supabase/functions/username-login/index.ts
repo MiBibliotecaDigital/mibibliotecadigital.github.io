@@ -10,6 +10,18 @@ const cors = {
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
   status, headers: { ...cors, "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
 });
+function readPublishableKey(): string {
+  const raw = Deno.env.get("SUPABASE_PUBLISHABLE_KEYS");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.default === "string") return parsed.default;
+      const first = Object.values(parsed ?? {}).find((value) => typeof value === "string");
+      if (typeof first === "string") return first;
+    } catch { return raw; }
+  }
+  return Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ?? "";
+}
 async function sha256(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest), (v) => v.toString(16).padStart(2, "0")).join("");
@@ -25,30 +37,39 @@ Deno.serve(async (request) => {
     if (!/^[a-z0-9._-]{3,32}$/.test(username) || password.length < 8 || password.length > 128) {
       return json({ error: "Usuario o contraseña incorrectos." }, 400);
     }
-    const url = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
-    const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-    const attemptKey = await sha256(username + "|" + ip);
-    const { data: allowed, error: rateError } = await admin.rpc("consume_username_login_attempt", { p_key_hash: attemptKey });
-    if (rateError || allowed !== true) return json({ error: "Demasiados intentos. Probá nuevamente en 15 minutos." }, 429);
 
-    const { data: profile } = await admin.from("profiles").select("id,status").eq("username", username).maybeSingle();
-    if (!profile || profile.status !== "active") return json({ error: "Usuario o contraseña incorrectos." }, 400);
-    const { data: userData, error: userError } = await admin.auth.admin.getUserById(profile.id);
-    const email = userData?.user?.email;
-    if (userError || !email) return json({ error: "Usuario o contraseña incorrectos." }, 400);
+    const url = Deno.env.get("SUPABASE_URL")!;
+    const publishableKey = readPublishableKey();
+    if (!url || !publishableKey) return json({ error: "Servicio de autenticación no configurado." }, 503);
+
+    // Cloudflare supplies CF-Connecting-IP; combine it with the username so
+    // attempts are isolated per account and source without exposing that data.
+    const ip = request.headers.get("CF-Connecting-IP") ||
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const attemptKey = await sha256(username + "|" + ip);
+    const lookup = createClient(url, publishableKey, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    });
+    const { data, error } = await lookup.rpc("username_login_lookup", {
+      p_username: username,
+      p_key_hash: attemptKey
+    });
+    if (error) {
+      console.error("username-login lookup failed", error);
+      return json({ error: "No se pudo validar el usuario." }, 503);
+    }
+    const result = data?.[0];
+    if (!result?.allowed) return json({ error: "Demasiados intentos. Probá nuevamente en 15 minutos." }, 429);
+    const email = result.email;
+    if (!email) return json({ error: "Usuario o contraseña incorrectos." }, 400);
 
     const authResponse = await fetch(url.replace(/\/+$/, "") + "/auth/v1/token?grant_type=password", {
       method: "POST",
-      headers: { apikey: anonKey, "Content-Type": "application/json" },
+      headers: { apikey: publishableKey, "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
     });
     if (!authResponse.ok) return json({ error: "Usuario o contraseña incorrectos." }, 400);
-    const session = await authResponse.json();
-    await admin.rpc("clear_username_login_attempt", { p_key_hash: attemptKey });
-    return json(session);
+    return json(await authResponse.json());
   } catch (error) {
     console.error("username-login failure", error);
     return json({ error: "No se pudo iniciar sesión." }, 500);
