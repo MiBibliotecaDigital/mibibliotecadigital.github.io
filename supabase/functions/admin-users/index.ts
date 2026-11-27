@@ -16,6 +16,21 @@ const normalizeUsername = (value: unknown) => {
 };
 const validUsername = (value: string | null) => value === null || /^[a-z0-9._-]{3,32}$/.test(value);
 
+function readApiKey(dictionaryName: string, legacyName: string, fallbackName?: string): string | null {
+  const raw = Deno.env.get(dictionaryName);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.default === "string" && parsed.default) return parsed.default;
+      const first = Object.values(parsed ?? {}).find((value) => typeof value === "string" && value);
+      if (typeof first === "string") return first;
+    } catch {
+      return raw;
+    }
+  }
+  return Deno.env.get(legacyName) ?? (fallbackName ? Deno.env.get(fallbackName) : null);
+}
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers });
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -24,7 +39,7 @@ Deno.serve(async (request) => {
 
   try {
     const url = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
+    const anonKey = readApiKey("SUPABASE_PUBLISHABLE_KEYS", "SUPABASE_ANON_KEY", "SUPABASE_PUBLISHABLE_KEY");
     if (!url || !anonKey) return json({ error: "Server connection is not configured" }, 503);
 
     const caller = createClient(url, anonKey, {
@@ -86,7 +101,7 @@ Deno.serve(async (request) => {
     }
 
     if (action === "create" || action === "delete") {
-      const secretKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SECRET_KEY");
+      const secretKey = readApiKey("SUPABASE_SECRET_KEYS", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY");
       if (!secretKey) return json({ error: "Auth Admin credentials are not configured" }, 503);
       const authAdmin = createClient(url, secretKey, {
         auth: { persistSession: false, autoRefreshToken: false }
