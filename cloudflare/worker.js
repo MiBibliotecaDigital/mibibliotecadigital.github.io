@@ -600,7 +600,7 @@ async function getLibraryThumbnail(request, env, headers, documentId) {
   if (!object) return reply("Thumbnail not generated", 404, headers);
   headers.set("Content-Type", "image/jpeg");
   headers.set("Content-Length", String(object.size));
-  headers.set("Cache-Control", "private, max-age=86400");
+  headers.set("Cache-Control", "private, max-age=604800, immutable");
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
