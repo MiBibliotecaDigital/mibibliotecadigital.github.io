@@ -72,7 +72,15 @@ export default {
     if (!UUID_RE.test(documentId)) return reply("Not found", 404, headers);
 
     const authorization = request.headers.get("Authorization") || "";
-    if (!/^Bearer\s+\S+$/i.test(authorization)) {
+    if (!authorization) {
+      // Direct navigation to a master document URL sends the visitor to the library.
+      // PDF.js requests include Authorization and continue through the checks below.
+      headers.set("Location", appOrigin.replace(/\\/+$/, "") + "/");
+      headers.set("Cache-Control", "no-store");
+      headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+      return new Response(null, { status: 302, headers });
+    }
+    if (!/^Bearer\\s+\\S+$/i.test(authorization)) {
       return reply("Authentication required", 401, headers);
     }
 
