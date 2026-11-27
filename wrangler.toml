@@ -1,0 +1,9 @@
+name = "mibibliotecadigital-pdf-gateway"
+main = "cloudflare/worker.js"
+compatibility_date = "2026-11-27"
+workers_dev = true
+
+# Bind the private R2 bucket. Do not enable a public R2 URL or custom domain.
+[[r2_buckets]]
+binding = "BIBLIOTECA"
+bucket_name = "biblioteca-digital-archivos"
