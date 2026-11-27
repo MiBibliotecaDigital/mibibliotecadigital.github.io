@@ -9,7 +9,7 @@ Las cuentas de demostración y los tres PDF ficticios solo funcionan en modo dem
 GitHub Settings > Pages > Deploy from a branch > main > /(root). URL: https://mibibliotecadigital.github.io/
 
 ## Backend
-1. Crear un proyecto Supabase y ejecutar `supabase/migrations/202611270001_initial_schema.sql` en SQL Editor.
+1. Crear un proyecto Supabase y ejecutar, en orden, `supabase/migrations/202611270001_initial_schema.sql` y `supabase/migrations/202611270002_harden_profile_updates.sql` en SQL Editor.
 2. Crear el primer usuario en Supabase Auth y promoverlo a administrador: `update public.profiles set role='admin' where id='UUID';`
 3. Desplegar `supabase/functions/admin-create-user` con Supabase CLI.
 4. Configurar secretos de esa función: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `APP_ORIGIN=https://mibibliotecadigital.github.io`.
