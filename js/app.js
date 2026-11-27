@@ -683,8 +683,9 @@ function metadataNameLike(value){
   const s=String(value||'').replace(/[©®].*$/,'').trim(),words=s.split(/\s+/).filter(Boolean);
   if(words.length<2||words.length>5||/copyright|buenos aires|argentina|editorial|ricordi|musicales|sadaic|isbn/i.test(s))return false;
   const connectors=new Set(['de','del','la','las','los','y','e','da','do','van','von','the','of']);
-  const valid=words.filter(w=>!connectors.has(w.toLowerCase())).every(w=>/^(?:[A-ZÁÉÍÓÚÜÑ]\.?|[A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ.'’\-]+)$/.test(w));
-  return valid&&words.filter(w=>!connectors.has(w.toLowerCase())).length>=2;
+  const cleanWords=words.map(w=>w.replace(/,$/,''));
+  const valid=cleanWords.filter(w=>!connectors.has(w.toLowerCase())).every(w=>/^(?:[A-ZÁÉÍÓÚÜÑ]\.?|[A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ.'’\-]+)$/.test(w));
+  return valid&&cleanWords.filter(w=>!connectors.has(w.toLowerCase())).length>=2;
 }
 function metadataAuthorClean(value){
   let s=String(value||'').replace(/(?:©|copyright|derechos reservados).*/i,'').replace(/\s+/g,' ').trim();
@@ -1397,6 +1398,13 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   if(possibleDuplicates.length)updates.metadata_error='Posible coincidencia con "'+String(possibleDuplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.';
   else if(matchStatus==='review')updates.metadata_error='Se encontró una posible coincidencia de catálogo de '+external.score+'/100. Confirmá título, autor e identificadores antes de aplicarla.';
   else if(matchStatus==='non_book')updates.metadata_error='El documento parece ser una publicación no monográfica. Revisá su tipo antes de publicarlo.';
+  const exactMelosMatch=accepted&&external?.source==='Ediciones Melos · catálogo oficial'&&
+   external.identifierMatch?.type==='publisher_number'&&
+   metadataNormalizeIdentifier('publisher_number',external.catalogDetails?.verifiedCode||'')===
+   metadataNormalizeIdentifier('publisher_number',publisherId?.value||'');
+  const autoPublished=exactMelosMatch&&!manual&&!possibleDuplicates.length&&
+   (d.uploadStatus||d.upload_status)==='stored';
+  if(autoPublished)updates.is_published=true;
   const{error}=await db.from('documents').update(updates).eq('id',id);
   if(error)throw error;
   return{...updates,possibleDuplicates,candidate:external||null,accepted,kind:finalKind,identifiers,repeatedLines,sampledPages};
