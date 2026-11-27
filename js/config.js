@@ -1,0 +1,1 @@
+window.BIBLIOTECA_CONFIG={supabaseUrl:"",supabaseAnonKey:"",demoMode:true};

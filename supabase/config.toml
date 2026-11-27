@@ -1,0 +1,7 @@
+project_id = "mi-biblioteca-digital"
+[api]
+enabled = true
+[functions.r2-document-url]
+verify_jwt = true
+[functions.admin-create-user]
+verify_jwt = true
