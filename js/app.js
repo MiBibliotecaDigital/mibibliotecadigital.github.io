@@ -19,7 +19,7 @@ async function loadUser(u){let {data:p,error}=await db.from('profiles').select('
 function nav(p,t){return '<button class="nav '+(page===p?'active':'')+'" data-page="'+p+'">'+t+'</button>'}
 function card(b){return '<article class="book '+(viewMode==='list'?'book-list-item':'')+'"><div class="cover '+b.tone+'"><small>PDF</small><strong>'+esc(b.title)+'</strong><span>'+esc(b.author||'Autor no indicado')+'</span></div><div class="info"><em>'+esc(b.category)+'</em><h3>'+esc(b.title)+'</h3><p>'+esc(b.author||'Autor no indicado')+' · '+esc(b.year||'Año sin indicar')+(b.pages&&b.pages!=='—'?' · '+esc(b.pages)+' págs.':'')+'</p><p class="book-tags">'+(b.tags||[]).map(t=>'<span>'+esc(t)+'</span>').join('')+'</p><footer><button class="fav" data-fav="'+esc(b.id)+'">'+(favs.has(b.id)?'♥':'♡')+'</button><small>'+esc(b.size)+'</small><button data-open="'+esc(b.id)+'">Abrir PDF</button>'+(role==='admin'?'<button class="small-action" data-edit-book="'+esc(b.id)+'">Editar</button><button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button>':'')+'</footer></div></article>'}
 function filtered(){let out=books.filter(b=>(page!=='favorites'||favs.has(b.id))&&(!query||(b.title+' '+b.author+' '+b.category+' '+(b.tags||[]).join(' ')).toLowerCase().includes(query.toLowerCase()))&&(!filterCollection||b.collectionId===filterCollection)&&(!filterCategory||b.category===filterCategory||(b.tags||[]).includes(filterCategory)));out.sort((a,b)=>{if(sortBy==='title'){const c=(a.title||'').localeCompare(b.title||'','es',{sensitivity:'base'});return sortDir==='asc'?c:-c}const av=sortBy==='year'?Number(a.year):Number(a.pageCount),bv=sortBy==='year'?Number(b.year):Number(b.pageCount),am=!Number.isFinite(av)||av<=0,bm=!Number.isFinite(bv)||bv<=0;if(am!==bm)return am?1:-1;const c=av-bv;return sortDir==='asc'?c:-c});return out}
-function uploadPage(){return '<div class="heading"><div><h1>Subir PDFs</h1><p>Seleccioná varios archivos. Se guardan como borradores privados y se analizan automáticamente.</p></div></div><form class="panel upload-panel" id="upload-form"><label class="upload-drop" id="upload-drop" for="upload-files"><strong>Elegí o arrastrá varios archivos PDF</strong><span>Sin límite artificial de archivos por tanda · 2 GiB por archivo</span><input id="upload-files" name="files" type="file" accept=".pdf,application/pdf" multiple required></label><div id="upload-file-list" class="upload-file-list"><span class="muted">Todavía no seleccionaste archivos.</span></div><div class="upload-note"><b>Etapa 1 · Guardado:</b> los PDFs se suben y registran en el catálogo como borradores privados. La subida usa hasta 3 archivos simultáneos. Un fallo posterior de metadatos no elimina el archivo.</div><div class="upload-note"><b>Etapa 2 · Metadatos:</b> al terminar todas las cargas, Se usa el nombre del archivo, se inspeccionan hasta 18 páginas de muestra distribuidas por todo el PDF. Se extrae texto y se buscan identificadores y líneas repetidas en encabezados y pies; no se ejecuta OCR. Se puede interrumpir y reanudar desde Administrar libros; los PDFs ya guardados permanecen disponibles.</div><div class="upload-note">Al terminar, se extraen automáticamente propiedades y texto del PDF. Para códigos editoriales BA y MEL se consulta primero el buscador oficial de Ediciones Melos. Cada ficha se valida por coincidencia exacta del campo Cod y se recuperan autor/marca, instrumento, etiquetas, colaboradores, código de barras y todos los atributos adicionales (país, medidas, letra-precio, accesorios y páginas de la edición). Los códigos de barras solo se incorporan como ISBN o ISMN si superan la validación correspondiente. Si Melos no devuelve un producto exacto, se prueban RISM e IMSLP; WorldCat queda disponible como búsqueda complementaria. Para libros se consultan Google Books y Open Library, y para DOI/ISSN, Crossref. Las coincidencias se puntúan y las dudosas quedan para revisión; también se generan etiquetas a partir de materias y datos extraídos. Cada ficha queda como borrador privado para que puedas revisarla en Administrar libros. Los archivos escaneados sin texto pueden necesitar corrección manual.</div><div class="upload-note">La detección de duplicados usa la huella SHA-256 para identificar PDFs idénticos. Coincidencias de ISBN, código editorial, título o autor pueden indicar una misma obra o edición, pero no se consideran por sí solas un archivo duplicado.</div><button class="primary" id="upload-submit" type="submit" disabled>Subir PDFs seleccionados</button><div id="upload-results" class="upload-results" aria-live="polite"></div></form>'}
+function uploadPage(){return '<div class="heading"><div><h1>Subir PDFs</h1><p>Seleccioná varios archivos. Se guardan como borradores privados y se analizan automáticamente.</p></div></div><form class="panel upload-panel" id="upload-form"><label class="upload-drop" id="upload-drop" for="upload-files"><strong>Elegí o arrastrá varios archivos PDF</strong><span>Sin límite artificial de archivos por tanda · 2 GiB por archivo</span><input id="upload-files" name="files" type="file" accept=".pdf,application/pdf" multiple required></label><div id="upload-file-list" class="upload-file-list"><span class="muted">Todavía no seleccionaste archivos.</span></div><div class="upload-note"><b>Etapa 1 · Guardado:</b> los PDFs se suben y registran en el catálogo como borradores privados. La subida usa hasta 3 archivos simultáneos. Un fallo posterior de metadatos no elimina el archivo.</div><div class="upload-note"><b>Etapa 2 · Metadatos:</b> al terminar todas las cargas, Se usa el nombre del archivo, se inspeccionan hasta 18 páginas de muestra distribuidas por todo el PDF. Se extrae texto y se buscan identificadores y líneas repetidas en encabezados y pies; no se ejecuta OCR. Se puede interrumpir y reanudar desde Administrar libros; los PDFs ya guardados permanecen disponibles.</div><div class="upload-note">Al terminar, se extraen automáticamente propiedades y texto del PDF. Para códigos editoriales BA y MEL se consulta primero el buscador oficial de Ediciones Melos. Cada ficha se valida por coincidencia exacta del campo Cod y se recuperan autor/marca, instrumento, etiquetas, colaboradores, código de barras y todos los atributos adicionales (país, medidas, letra-precio, accesorios y páginas de la edición). Los códigos de barras solo se incorporan como ISBN o ISMN si superan la validación correspondiente. Si Melos no devuelve un producto exacto, se prueban RISM e IMSLP; WorldCat queda disponible como búsqueda complementaria. Para libros se consulta primero ISBNLab y, si no devuelve una ficha, se prueban Google Books y Open Library. Para DOI/ISSN se consulta Crossref. Las coincidencias se puntúan y las dudosas quedan para revisión; también se generan etiquetas a partir de materias y datos extraídos. Cada ficha queda como borrador privado para que puedas revisarla en Administrar libros. Los archivos escaneados sin texto pueden necesitar corrección manual.</div><div class="upload-note">La detección de duplicados usa la huella SHA-256 para identificar PDFs idénticos. Coincidencias de ISBN, código editorial, título o autor pueden indicar una misma obra o edición, pero no se consideran por sí solas un archivo duplicado.</div><button class="primary" id="upload-submit" type="submit" disabled>Subir PDFs seleccionados</button><div id="upload-results" class="upload-results" aria-live="polite"></div></form>'}
 function renderUploadSelection(){
   const list=document.querySelector('#upload-file-list'),button=document.querySelector('#upload-submit');
   if(!list||!button)return;
@@ -454,7 +454,7 @@ async function uploadMultiple(e){
   if(success||recovered.recovered)void runMetadataQueue(null,session.access_token);
 }
 function pendingPage(){
-  return '<div class="heading"><div><h1>Metadatos pendientes</h1><p>Los documentos de esta lista están guardados en privado y todavía no aparecen para los lectores.</p></div><span class="tag">'+pendingDocs.length+' pendientes</span></div><div class="notice metadata-help"><b>La ficha se analiza automáticamente</b><span>Se parte del nombre original del archivo y se inspeccionan hasta 18 páginas distribuidas por el PDF para extraer identificadores, números editoriales y datos bibliográficos. Se registran las fuentes consultadas y sus resultados. Para búsquedas por número editorial, WorldCat ofrece una búsqueda pública por índice mn=; la consulta automática de su API requiere acceso OCLC. Son sugerencias: revisalas antes de publicar. Los PDFs escaneados sin capa de texto pueden necesitar OCR adicional.</span></div>'+(pendingDocs.length?'<div class="panel"><table class="pending-table"><tr><th>Documento (nombre provisional)</th><th>Tamaño</th><th>Estado</th><th></th></tr>'+pendingDocs.map(d=>'<tr><td>'+esc(d.title)+'</td><td>'+esc(d.size)+'</td><td><span class="pending-tag">Privado</span></td><td><button class="small-action" data-analyze-doc="'+esc(d.id)+'">Analizar PDF</button><button class="small-action" data-edit-doc="'+esc(d.id)+'">Editar ficha</button><button class="small-action" data-open="'+esc(d.id)+'">Vista previa</button><button class="small-action danger" data-delete-book="'+esc(d.id)+'">Eliminar</button></td></tr>').join('')+'</table>':'<div class="panel empty-state">No hay fichas pendientes. Cuando subas PDFs, aparecerán aquí.')+'</div>';
+  return '<div class="heading"><div><h1>Metadatos pendientes</h1><p>Los documentos de esta lista están guardados en privado y todavía no aparecen para los lectores.</p></div><span class="tag">'+pendingDocs.length+' pendientes</span></div><div class="notice metadata-help"><b>La ficha se analiza automáticamente</b><span>Se parte del nombre original del archivo y se inspeccionan hasta 18 páginas distribuidas por el PDF para extraer identificadores, números editoriales y datos bibliográficos. Se registran las fuentes consultadas y sus resultados. Las búsquedas por ISBN comienzan en ISBNLab y continúan con Google Books y Open Library cuando no aparece una ficha. Para búsquedas por número editorial, WorldCat ofrece una búsqueda pública por índice mn=; la consulta automática de su API requiere acceso OCLC. Son sugerencias: revisalas antes de publicar. Los PDFs escaneados sin capa de texto pueden necesitar OCR adicional.</span></div>'+(pendingDocs.length?'<div class="panel"><table class="pending-table"><tr><th>Documento (nombre provisional)</th><th>Tamaño</th><th>Estado</th><th></th></tr>'+pendingDocs.map(d=>'<tr><td>'+esc(d.title)+'</td><td>'+esc(d.size)+'</td><td><span class="pending-tag">Privado</span></td><td><button class="small-action" data-analyze-doc="'+esc(d.id)+'">Analizar PDF</button><button class="small-action" data-edit-doc="'+esc(d.id)+'">Editar ficha</button><button class="small-action" data-open="'+esc(d.id)+'">Vista previa</button><button class="small-action danger" data-delete-book="'+esc(d.id)+'">Eliminar</button></td></tr>').join('')+'</table>':'<div class="panel empty-state">No hay fichas pendientes. Cuando subas PDFs, aparecerán aquí.')+'</div>';
 }
 
 function editDocumentMetadata(id){
@@ -966,6 +966,82 @@ function metadataCandidateFromGoogle(item){
  return{title:metadataTitleClean(v.title||''),authors:(v.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:[...new Set(ids)],identifiers:[...new Set(ids)].map(value=>({type:'isbn',value,normalized:value})),publisher:String(v.publisher||''),year:date?Number(date[0]):null,description:metadataCleanDescription(v.description),tags:(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean).slice(0,30),pageCount:v.pageCount||null,source:'Google Books',printType:String(v.printType||'').toUpperCase(),sourceId:item?.id||null};
 }
 
+function metadataCandidateFromIsbnLab(book, queriedIsbn) {
+ const returnedIsbns=[book?.isbn10,book?.isbn13].map(metadataValidIsbn).filter(Boolean);
+ const isbns=[...new Set([queriedIsbn,...returnedIsbns].filter(Boolean))];
+ const authors=(Array.isArray(book?.authors)?book.authors:[])
+  .map(x=>metadataAuthorClean(typeof x==="string"?x:x?.name||""))
+  .filter(metadataAuthorUsable);
+ const publishers=(Array.isArray(book?.publishers)?book.publishers:[])
+  .map(x=>typeof x==="string"?x:x?.name||"").filter(Boolean);
+ const imprint=(Array.isArray(book?.imprint)?book.imprint:[])
+  .map(x=>typeof x==="string"?x:x?.name||"").filter(Boolean);
+ const subjects=(Array.isArray(book?.subjects)?book.subjects:[])
+  .map(x=>typeof x==="string"?x:x?.name||"").filter(Boolean);
+ const genres=(Array.isArray(book?.genres)?book.genres:[])
+  .map(x=>typeof x==="string"?x:x?.name||"").filter(Boolean);
+ const date=String(book?.publishDate||"").match(/(?:18|19|20)\d{2}/);
+ const title=[book?.title,book?.subtitle].filter(Boolean).join(": ");
+ const sourceUrl=typeof book?.link==="string"&&/^https:\/\/www\.isbnlab\.com\//i.test(book.link)?book.link:null;
+ const identifiers=isbns.map(value=>({type:"isbn",value,normalized:value}));
+ return {
+  title:metadataTitleClean(title),
+  authors,
+  isbns,
+  identifiers,
+  publisher:publishers[0]||imprint[0]||"",
+  year:date?Number(date[0]):null,
+  description:metadataCleanDescription(book?.description||""),
+  tags:[...new Set([...subjects,...genres])].slice(0,40),
+  pageCount:Number(book?.numberOfPages)||null,
+  source:"ISBNLab",
+  printType:"BOOK",
+  documentKind:"book",
+  sourceId:book?.id!==undefined?String(book.id):queriedIsbn,
+  sourceUrl
+ };
+}
+
+let isbnLabRequestChain=Promise.resolve(),isbnLabLastRequest=0,isbnLabBackoffUntil=0,isbnLabPausedUntil=0,isbnLabPausedReason="";
+async function isbnLabSearch(value) {
+ const isbn=metadataValidIsbn(value);
+ if(!isbn)return[];
+ if(Date.now()<isbnLabPausedUntil)throw new Error(isbnLabPausedReason||"ISBNLab temporalmente pausado.");
+ const request=isbnLabRequestChain.then(async()=>{
+  if(Date.now()<isbnLabPausedUntil)throw new Error(isbnLabPausedReason||"ISBNLab temporalmente pausado.");
+  if(Date.now()<isbnLabBackoffUntil)throw new Error("ISBNLab límite temporal; reintentar en "+Math.ceil((isbnLabBackoffUntil-Date.now())/1000)+" s");
+  const wait=Math.max(0,1000-(Date.now()-isbnLabLastRequest));
+  if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+  isbnLabLastRequest=Date.now();
+  const base=(c.pdfGatewayUrl||"").replace(/\/+$/,"");
+  if(!base)throw new Error("Falta configurar el gateway de ISBNLab.");
+  const {data:{session}}=await db.auth.getSession();
+  if(!session?.access_token)throw new Error("Sesión vencida.");
+  const endpoint=new URL(base+"/catalog/isbnlab");
+  endpoint.searchParams.set("isbn",isbn);
+  const response=await fetch(endpoint,{headers:{Authorization:"Bearer "+session.access_token},signal:AbortSignal.timeout(16000)});
+  let payload={};try{payload=await response.json()}catch{}
+  if(response.status===404||payload.notFound)return[];
+  if(response.status===429){
+   const seconds=Math.max(1,Number(payload.retryAfterSeconds)||1);
+   isbnLabBackoffUntil=Date.now()+seconds*1000;
+   throw new Error("ISBNLab HTTP 429 · reintentar en "+seconds+" s");
+  }
+  if(!response.ok){
+   const detail=payload.error||("ISBNLab gateway HTTP "+response.status);
+   if(payload.code==="isbnlab_not_configured"||payload.code==="isbnlab_auth_error"){
+    isbnLabPausedReason=detail;
+    isbnLabPausedUntil=Date.now()+10*60*1000;
+   }
+   throw new Error(detail+(payload.detail?": "+payload.detail:""));
+  }
+  if(!payload.match||!payload.book)return[];
+  return[metadataCandidateFromIsbnLab(payload.book,isbn)];
+ });
+ isbnLabRequestChain=request.catch(()=>null);
+ return request;
+}
+
 let googleBooksBackoffUntil=0;
 async function googleBooksSearch(context){
  if(Date.now()<googleBooksBackoffUntil)throw new Error('Google Books HTTP 429 · pausa temporal por límite de consultas');
@@ -1206,11 +1282,12 @@ async function melosLookupPublisherNumber(identifier,trace=[]){
 
 async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind='unknown',trace=[]){
  let best=null;
+ const seenIsbnLookups=new Set();
  const scoreCandidates=(candidates,context)=>{
   const ranked=(candidates||[]).map(x=>metadataRankCandidate(x,{...context,identifiers})).sort((a,b)=>b.score-a.score);
   if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];
  };
- const addTrace=(source,identifier,candidates,error=null)=>trace.push({source,identifier:identifier?.value||'',results:(candidates||[]).length,error:error?String(error?.message||error).slice(0,240):null});
+ const addTrace=(source,identifier,candidates,error=null,details={})=>trace.push({source,identifier:identifier?.value||'',results:(candidates||[]).length,error:error?String(error?.message||error).slice(0,240):null,...details});
  for(const identifier of identifiers){
   if(identifier.type==='publisher_number'){
    let candidates=[];
@@ -1229,8 +1306,15 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
    for(const context of contexts.length?contexts:[{title:'',authors:[]}])scoreCandidates(candidates,context);
   }else if(identifier.type==='isbn'){
    const isbn=metadataValidIsbn(identifier.value);
-   if(isbn){
+   if(isbn&&!seenIsbnLookups.has(isbn)){
+    seenIsbnLookups.add(isbn);
     const contextsForIsbn=contexts.length?contexts:[{title:'',authors:[]}];
+    try{
+     const candidates=await isbnLabSearch(isbn);
+     addTrace('ISBNLab · ISBN',identifier,candidates,null,candidates.length?{}:{note:'ISBN no encontrado en ISBNLab'});
+     for(const context of contextsForIsbn)scoreCandidates(candidates,{...context,isbn});
+    }catch(error){addTrace('ISBNLab · ISBN',identifier,[],error);console.info('ISBNLab ISBN lookup unavailable:',error?.message||error)}
+    if(best&&metadataCandidateAccepted(best))return best;
     try{
      const candidates=await googleBooksSearch({isbn});
      addTrace('Google Books · ISBN',identifier,candidates);
