@@ -1180,8 +1180,8 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
    ?publisherLine.text.replace(/^(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*/i,'').replace(/\s+(?:buenos aires|madrid|barcelona|argentina|españa)\b.*$/i,'').trim().slice(0,160)
    :(knownPublisher?.[1]||(identifiers.some(x=>x.type==='publisher_number'&&/^BA\b/i.test(x.value))?'Bärenreiter':''));
   const embeddedTags=[...String(info.Keywords||'').split(/[,;|]/),...String(info.Subject||'').split(/[,;|]/)].map(x=>x.trim()).filter(x=>x.length>1&&x.length<80);
-  const filenameTitle=metadataTitleSpecific(filename.title)&&metadataTitleUsable(filename.title)?filename.title:'';
-  const fallbackTitle=metadataTitleSpecific(extractedTitle)&&metadataTitleUsable(extractedTitle)?extractedTitle:(metadataTitleSpecific(d.title)&&metadataTitleUsable(d.title)?metadataTitleClean(d.title):'');
+  const filenameTitle=metadataTitleIsSpecific(filename.title)&&metadataTitleUsable(filename.title)?filename.title:'';
+  const fallbackTitle=metadataTitleIsSpecific(extractedTitle)&&metadataTitleUsable(extractedTitle)?extractedTitle:(metadataTitleIsSpecific(d.title)&&metadataTitleUsable(d.title)?metadataTitleClean(d.title):'');
   const primaryTitle=filenameTitle||fallbackTitle;
   const titles=[primaryTitle,extractedTitle].filter((x,i,a)=>x&&metadataTitleIsSpecific(x)&&a.findIndex(y=>metadataTextKey(y)===metadataTextKey(x))===i);
   const kind=metadataDetectDocumentKind(originalFilename||d.title,normalized,null,identifiers);
