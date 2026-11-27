@@ -330,6 +330,54 @@ async function uploadComplete(request, env, headers) {
   return jsonReply({ ok: true, document: Array.isArray(rows) ? rows[0] : null }, 201, headers);
 }
 
+
+async function deleteLibraryDocument(request, env, headers, documentId) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  const base = env.SUPABASE_URL.replace(/\\/+$/, "");
+  const selectQuery = new URLSearchParams({ select: "id,provider,r2_key", id: "eq." + documentId, limit: "1" });
+  const metadataResponse = await fetch(base + "/rest/v1/documents?" + selectQuery, {
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: auth.authorization,
+      Accept: "application/json"
+    }
+  });
+  if (!metadataResponse.ok) return reply("Could not retrieve document metadata", 502, headers);
+  const rows = await metadataResponse.json();
+  const document = Array.isArray(rows) ? rows[0] : null;
+  if (!document) return reply("Document not found", 404, headers);
+
+  const deleteQuery = new URLSearchParams({ id: "eq." + documentId });
+  const deleteResponse = await fetch(base + "/rest/v1/documents?" + deleteQuery, {
+    method: "DELETE",
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: auth.authorization,
+      Prefer: "return=representation"
+    }
+  });
+  if (!deleteResponse.ok) {
+    console.error("Document database deletion failed", deleteResponse.status, await deleteResponse.text());
+    return reply("Could not remove the document from the catalogue", 502, headers);
+  }
+  const deletedRows = await deleteResponse.json();
+  if (!Array.isArray(deletedRows) || deletedRows.length !== 1) {
+    return reply("Document deletion was not confirmed", 409, headers);
+  }
+
+  let storageCleanupPending = false;
+  if (document.provider === "r2" && typeof document.r2_key === "string" && document.r2_key) {
+    try {
+      await env.BIBLIOTECA.delete(document.r2_key);
+    } catch (error) {
+      storageCleanupPending = true;
+      console.error("Orphaned private R2 object requires cleanup", { key: document.r2_key, error: String(error) });
+    }
+  }
+  return jsonReply({ ok: true, storageCleanupPending }, 200, headers);
+}
+
 async function uploadAbort(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
@@ -368,6 +416,17 @@ export default {
     if (pathname === "/upload/part" && request.method === "PUT") return uploadPart(request, env, headers);
     if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers);
     if (pathname === "/upload/abort" && request.method === "DELETE") return uploadAbort(request, env, headers);
+    const deleteMatch = pathname.match(/^\\/document\\/([^/]+)$/);
+    if (deleteMatch && request.method === "DELETE") {
+      const documentId = deleteMatch[1];
+      if (!UUID_RE.test(documentId)) return reply("Not found", 404, headers);
+      try {
+        return await deleteLibraryDocument(request, env, headers, documentId);
+      } catch (error) {
+        console.error("Document deletion failed", error);
+        return reply("Unable to delete document", 502, headers);
+      }
+    }
 
     const reviewMatch = pathname.match(/^\/review\/([A-Za-z0-9_-]{43})\/([^/]+)$/);
     if (reviewMatch && (request.method === "GET" || request.method === "HEAD")) {
