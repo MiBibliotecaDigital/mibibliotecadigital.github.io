@@ -41,6 +41,55 @@ async function fingerprintFile(file,onProgress){
   const finalDigest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical));
   return Array.from(new Uint8Array(finalDigest),b=>b.toString(16).padStart(2,'0')).join('');
 }
+async function fingerprintResponseStream(response,expectedSize){
+  if(!response.ok||!response.body)throw new Error('No se pudo leer un PDF existente para verificar duplicados.');
+  const chunkSize=16*1024*1024,buffer=new Uint8Array(chunkSize),parts=[];
+  const reader=response.body.getReader();let position=0,total=0;
+  try{
+    while(true){
+      const {value,done}=await reader.read();if(done)break;
+      let offset=0;total+=value.byteLength;
+      while(offset<value.byteLength){
+        const count=Math.min(chunkSize-position,value.byteLength-offset);
+        buffer.set(value.subarray(offset,offset+count),position);
+        position+=count;offset+=count;
+        if(position===chunkSize){
+          const digest=await crypto.subtle.digest('SHA-256',buffer);
+          parts.push(Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join(''));
+          position=0;
+        }
+      }
+    }
+  }finally{reader.releaseLock()}
+  if(total!==expectedSize)throw new Error('La lectura del PDF existente no coincide con su tamaño registrado.');
+  if(position){
+    const digest=await crypto.subtle.digest('SHA-256',buffer.slice(0,position));
+    parts.push(Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join(''));
+  }
+  const canonical='MiBibliotecaDigital:file-fingerprint:v1:'+total+':'+chunkSize+':'+parts.join('');
+  const finalDigest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(finalDigest),b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function ensureLibraryFingerprintIndex(token,onProgress){
+  const {data:missing,error}=await db.from('documents')
+    .select('id,title,size_bytes')
+    .eq('provider','r2')
+    .is('file_fingerprint',null)
+    .order('created_at',{ascending:true});
+  if(error)throw error;
+  const docs=missing||[];
+  for(let i=0;i<docs.length;i++){
+    const doc=docs[i];
+    onProgress?.(doc,i+1,docs.length,0);
+    const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
+    const response=await fetch(base+'/pdf/'+encodeURIComponent(doc.id),{headers:{Authorization:'Bearer '+token}});
+    const fingerprint=await fingerprintResponseStream(response,Number(doc.size_bytes));
+    const {error:updateError}=await db.from('documents').update({file_fingerprint:fingerprint}).eq('id',doc.id);
+    if(updateError)throw updateError;
+    onProgress?.(doc,i+1,docs.length,100);
+  }
+  return docs.length;
+}
 async function findExactDuplicates(fingerprint){
   const {data,error}=await db.from('documents').select('id,title,authors,isbn,is_published,file_fingerprint')
     .eq('file_fingerprint',fingerprint).limit(10);
@@ -118,6 +167,23 @@ async function uploadMultiple(e){
   button.disabled=true;
   results.innerHTML=files.map((f,i)=>'<div class="upload-result" data-upload-row="'+i+'"><div><strong>'+esc(f.name)+'</strong><span class="upload-result-status">En cola</span></div><progress max="100" value="0"></progress></div>').join('');
   let success=0,failed=0,skipped=0;
+  try{
+    const indexed=await ensureLibraryFingerprintIndex(session.access_token,(doc,current,total,percent)=>{
+      const first=results.querySelector('[data-upload-row="0"]');
+      if(first){
+        const line=first.querySelector('.upload-result-status');
+        if(line)line.textContent='Indexando biblioteca ('+current+'/'+total+'): '+doc.title;
+      }
+    });
+    if(indexed&&results.firstElementChild){
+      const line=results.firstElementChild.querySelector('.upload-result-status');
+      if(line)line.textContent='Índice de duplicados actualizado · listo para cargar';
+    }
+  }catch(indexError){
+    button.disabled=false;
+    toast('No se inició la subida porque no se pudieron comprobar los PDFs existentes: '+(indexError?.message||'error de lectura'));
+    return;
+  }
   for(let i=0;i<files.length;i++){
     const row=results.querySelector('[data-upload-row="'+i+'"]'),status=row.querySelector('.upload-result-status'),progress=row.querySelector('progress');
     let fileFingerprint=null;
