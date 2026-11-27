@@ -1073,22 +1073,28 @@ function metadataCategoryFromTags(tags,kind){
 
 async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additionalCandidates=[]){
  let d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
- if(!d){const{data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed,metadata_status,metadata_error,upload_status,original_filename,metadata_match_status,metadata_confidence,metadata_candidate,document_kind').eq('id',id).single();if(error||!row)throw error||new Error('Documento no encontrado.');d={...row,year:row.publication_year||'',authors:row.authors||[],tags:row.tags||[],metadataSource:row.metadata_source||'filename',metadataReviewed:!!row.metadata_reviewed,uploadStatus:row.upload_status||'stored',originalFilename:row.original_filename||''}}
- if(d.provider!=='r2')return{};if(d.uploadStatus&&d.uploadStatus!=='stored')throw new Error('El PDF todavía no está marcado como guardado en R2.');
- const{data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;if(!token)throw new Error('Sesión vencida.');
-
+ if(!d){
+  const{data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed,metadata_status,metadata_error,upload_status,original_filename,metadata_match_status,metadata_confidence,metadata_candidate,document_kind,bibliographic_identifiers').eq('id',id).single();
+  if(error||!row)throw error||new Error('Documento no encontrado.');
+  d={...row,year:row.publication_year||'',authors:row.authors||[],tags:row.tags||[],metadataSource:row.metadata_source||'filename',metadataReviewed:!!row.metadata_reviewed,uploadStatus:row.upload_status||'stored',originalFilename:row.original_filename||'',bibliographicIdentifiers:row.bibliographic_identifiers||[]};
+ }
+ if(d.provider!=='r2')return{};
+ if(d.uploadStatus&&d.uploadStatus!=='stored')throw new Error('El PDF todavía no está marcado como guardado en R2.');
+ const{data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;
+ if(!token)throw new Error('Sesión vencida.');
  const originalFilename=String(d.originalFilename||d.original_filename||'').trim();
  const filename=metadataParseFilename(originalFilename||d.title||'');
- // Cheap first pass: use the original filename and a previously validated ISBN.
- // Only fetch the PDF when the catalog cannot establish a high-confidence match.
- if(originalFilename&&metadataTitleUsable(filename.title)){
-  const storedIsbn=metadataValidIsbn(d.isbn),fastContext={title:filename.title,authors:filename.authors,isbn:storedIsbn,publisher:d.publisher||'',year:d.year||d.publication_year||null};
-  const fastCandidate=await lookupBibliographicCandidate([fastContext]);
-  const fastAccepted=!!(fastCandidate&&fastCandidate.score>=90&&(fastCandidate.isbnMatch||fastCandidate.titleSimilarity>=.88&&fastCandidate.authorMatch));
-  if(fastAccepted){
-   const kind=metadataDetectDocumentKind(originalFilename,'',fastCandidate),duplicateBase={id,title:fastCandidate.title,authors:fastCandidate.authors,isbn:storedIsbn||fastCandidate.isbns?.[0]||d.isbn};
+ const existingIdentifiers=Array.isArray(d.bibliographicIdentifiers)?d.bibliographicIdentifiers:(Array.isArray(d.bibliographic_identifiers)?d.bibliographic_identifiers:[]);
+ const fastKind=metadataDetectDocumentKind(originalFilename,'',null,existingIdentifiers);
+ // Fast path only when the filename already contains enough bibliographic context.
+ if(originalFilename&&metadataTitleIsSpecific(filename.title)&&!['music_score','periodical','article'].includes(fastKind)){
+  const storedIsbn=metadataValidIsbn(d.isbn),fastContext={title:filename.title,authors:filename.authors,isbn:storedIsbn,publisher:d.publisher||'',year:d.year||d.publication_year||null,identifiers:existingIdentifiers};
+  const fastCandidate=await lookupBibliographicCandidate([fastContext],existingIdentifiers,fastKind);
+  if(metadataCandidateAccepted(fastCandidate)){
+   const kind=metadataDetectDocumentKind(originalFilename,'',fastCandidate,existingIdentifiers),duplicateBase={id,title:fastCandidate.title,authors:fastCandidate.authors,isbn:storedIsbn||fastCandidate.isbns?.[0]||d.isbn,bibliographicIdentifiers:existingIdentifiers};
    const duplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
    const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
+   const fastTags=metadataBuildTags({filename:originalFilename,kind,catalog:fastCandidate,accepted:true,embeddedTags:d.tags||[],publisher:fastCandidate.publisher,identifiers:existingIdentifiers});
    const fastUpdates={metadata_error:duplicates.length?'Posible coincidencia con "'+String(duplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.':null,metadata_checked_at:new Date().toISOString(),metadata_match_status:duplicates.length?'duplicate':'matched',metadata_confidence:fastCandidate.score,metadata_candidate:null,document_kind:kind,metadata_status:'complete'};
    if(!manual){
     fastUpdates.title=fastCandidate.title.slice(0,300);
@@ -1096,9 +1102,9 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
     if(storedIsbn||fastCandidate.isbns?.[0])fastUpdates.isbn=storedIsbn||fastCandidate.isbns[0];
     if(fastCandidate.publisher)fastUpdates.publisher=fastCandidate.publisher.slice(0,200);
     if(fastCandidate.year)fastUpdates.publication_year=fastCandidate.year;
-    if(fastCandidate.tags?.length)fastUpdates.tags=fastCandidate.tags.slice(0,30);
+    if(fastTags.length)fastUpdates.tags=fastTags;
     if(fastCandidate.description&&!d.description)fastUpdates.description=fastCandidate.description;
-    fastUpdates.category=metadataCategoryFromTags(fastCandidate.tags||[],kind);
+    fastUpdates.category=metadataCategoryFromTags(fastTags,kind);
     fastUpdates.metadata_source='filename';
     fastUpdates.metadata_reviewed=false;
    }
@@ -1109,49 +1115,106 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
  }
  const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
- const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id),task=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
+ const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);
+ const task=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
  try{
-  const pdf=await task.promise,meta=await pdf.getMetadata(),info=meta?.info||{},pageLines=[];
-  for(let n=1;n<=Math.min(pdf.numPages,3);n++){const p=await pdf.getPage(n),tc=await p.getTextContent();pageLines.push(...metadataPageLines(tc.items,n))}
-  const text=pageLines.map(x=>x.text).join('\n'),normalized=[text,info.Subject||'',info.Keywords||''].join('\n').replace(/[\t\u00a0]+/g,' ').replace(/ {2,}/g,' ').replace(/\r/g,'\n');
-  const titleLines=pageLines.filter(x=>x.page<=3&&metadataTitleUsable(x.text)&&!metadataNameLike(x.text)),maxFont=Math.max(1,...titleLines.filter(x=>x.page<=2).map(x=>x.font));
-  titleLines.sort((a,b)=>{const score=x=>(x.font/maxFont)*4+(x.page===1?2:x.page===2?1:0)-Math.max(0,x.text.length-80)/80;return score(b)-score(a)});
-  const embeddedTitle=metadataTitleClean(info.Title||''),pageTitle=titleLines[0]?.text||'',extractedTitle=metadataTitleUsable(embeddedTitle)?embeddedTitle:metadataTitleUsable(pageTitle)?pageTitle:'';
-  const authorCandidates=[...(filename.authors||[])],authorLabel=/^(?:autor(?:es)?|por|escrito por|written by|by|compositor(?:es)?|composer|composed by|m[uú]sica de|letra y m[uú]sica|lyrics(?: and music)? by|arr(?:eglo)?(?: de| by)?)\s*[:\-]?\s*(.{3,120})$/i;
-  for(const line of pageLines.filter(x=>x.page<=2)){const m=line.text.match(authorLabel);if(m){const v=metadataAuthorClean(m[1]);if(metadataAuthorUsable(v))authorCandidates.push(v)}else if(metadataNameLike(line.text)&&metadataTextKey(line.text)!==metadataTextKey(extractedTitle)&&metadataTextKey(line.text)!==metadataTextKey(filename.title))authorCandidates.push(metadataAuthorClean(line.text))}
-  const infoAuthor=String(info.Author||'').trim();if(infoAuthor&&!/[�]/.test(infoAuthor)&&infoAuthor.length<=120)authorCandidates.unshift(...infoAuthor.split(/[;,]/).map(metadataAuthorClean).filter(metadataAuthorUsable));
-  const pdfAuthors=[...new Set(authorCandidates)].slice(0,10),isbn=metadataExtractIsbn(normalized)||metadataValidIsbn(d.isbn)||null,pdfYear=metadataExtractYear(normalized);
+  const pdf=await task.promise,meta=await pdf.getMetadata(),info=meta?.info||{},pageLines=[],sampledPages=metadataSamplePages(pdf.numPages,18);
+  for(const pageNumber of sampledPages){
+   const page=await pdf.getPage(pageNumber),content=await page.getTextContent();
+   pageLines.push(...metadataPageLines(content.items,pageNumber));
+  }
+  const text=pageLines.map(x=>x.text).join('\n');
+  const normalized=[text,info.Subject||'',info.Keywords||''].join('\n').replace(/[\t\u00a0]+/g,' ').replace(/ {2,}/g,' ').replace(/\r/g,'\n');
+  const firstPageLines=pageLines.filter(x=>x.page<=3);
+  const titleLines=firstPageLines.filter(x=>metadataTitleUsable(x.text)&&metadataTitleIsSpecific(x.text)&&!metadataNameLike(x.text));
+  const maxFont=Math.max(1,...titleLines.filter(x=>x.page<=2).map(x=>x.font));
+  titleLines.sort((a,b)=>{
+   const score=x=>(x.font/maxFont)*4+(x.page===1?2:x.page===2?1:0)-Math.max(0,x.text.length-80)/80;
+   return score(b)-score(a);
+  });
+  const embeddedTitle=metadataTitleClean(info.Title||''),pageTitle=titleLines[0]?.text||'';
+  const extractedTitle=metadataTitleIsSpecific(embeddedTitle)&&metadataTitleUsable(embeddedTitle)?embeddedTitle:pageTitle;
+  const authorCandidates=[...(filename.authors||[])];
+  const authorLabel=/^(?:autor(?:es)?|por|escrito por|written by|by|compositor(?:es)?|composer|composed by|m[uú]sica de|letra y m[uú]sica|lyrics(?: and music)? by|arr(?:eglo)?(?: de| by)?)\s*[:\-]?\s*(.{3,120})$/i;
+  for(const line of firstPageLines){
+   const match=line.text.match(authorLabel);
+   if(match){const value=metadataAuthorClean(match[1]);if(metadataAuthorUsable(value))authorCandidates.push(value)}
+   else if(metadataNameLike(line.text)&&metadataTextKey(line.text)!==metadataTextKey(extractedTitle)&&metadataTextKey(line.text)!==metadataTextKey(filename.title))authorCandidates.push(metadataAuthorClean(line.text));
+  }
+  const infoAuthor=String(info.Author||'').trim();
+  if(infoAuthor&&!/[�]/.test(infoAuthor)&&infoAuthor.length<=120)authorCandidates.unshift(...infoAuthor.split(/[;,]/).map(metadataAuthorClean).filter(metadataAuthorUsable));
+  const pdfAuthors=[...new Set(authorCandidates)].slice(0,10);
+  const extractedIdentifiers=metadataExtractIdentifiers(normalized,pageLines);
+  const identifiers=metadataUniqueIdentifiers([...existingIdentifiers.filter(x=>x.source==='manual'),...extractedIdentifiers]);
+  const isbn=identifiers.find(x=>x.type==='isbn')?.value||metadataValidIsbn(d.isbn)||null;
+  const pdfYear=metadataExtractYear(normalized);
   const publisherLine=pageLines.find(x=>/^(?:editorial|ediciones|publisher|published by)\b/i.test(x.text)&&!/(?:copyright|derechos reservados)/i.test(x.text));
-  const pdfPublisher=publisherLine?publisherLine.text.replace(/^(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*/i,'').replace(/\s+(?:buenos aires|madrid|barcelona|argentina|españa)\b.*$/i,'').trim().slice(0,160):'';
-  const embeddedTags=String(info.Keywords||'').split(/[,;|]/).map(x=>x.trim()).filter(x=>x.length>1&&x.length<50);
-  const primaryTitle=metadataTitleUsable(filename.title)?filename.title:metadataTitleUsable(extractedTitle)?extractedTitle:metadataTitleUsable(d.title)?d.title:'';
-  const titles=[primaryTitle,extractedTitle].filter((x,i,a)=>x&&a.findIndex(y=>metadataTextKey(y)===metadataTextKey(x))===i),contexts=titles.map(title=>({title,authors:pdfAuthors,isbn,publisher:pdfPublisher,year:pdfYear}));
-  const external=await lookupBibliographicCandidate(contexts),accepted=!!(external&&external.score>=90&&(external.isbnMatch||external.titleSimilarity>=.88&&external.authorMatch));
-  const kind=metadataDetectDocumentKind(d.originalFilename||d.original_filename||d.title,normalized,accepted?external:null),proposedTitle=accepted?external.title:primaryTitle,proposedAuthors=accepted&&external.authors.length?external.authors:pdfAuthors;
-  const oldAuthors=(d.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn};
+  const repeatedLines=metadataExtractRepeatedLines(pageLines);
+  const repeatedText=repeatedLines.map(x=>x.text).join(' ');
+  const knownPublishers=[
+   [/\bBärenreiter\b/i,'Bärenreiter'],[/\bUniversal Edition\b/i,'Universal Edition'],[/\bHenle Verlag\b/i,'G. Henle Verlag'],
+   [/\bSchott\b/i,'Schott Music'],[/\bRicordi\b/i,'Ricordi'],[/\bDurand\b/i,'Durand'],[/\bPeters Edition\b/i,'Edition Peters'],
+   [/\bBoosey\s*&?\s*Hawkes\b/i,'Boosey & Hawkes'],[/\bHal Leonard\b/i,'Hal Leonard']
+  ];
+  const knownPublisher=knownPublishers.find(([re])=>re.test(repeatedText+' '+normalized));
+  const pdfPublisher=publisherLine
+   ?publisherLine.text.replace(/^(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*/i,'').replace(/\s+(?:buenos aires|madrid|barcelona|argentina|españa)\b.*$/i,'').trim().slice(0,160)
+   :(knownPublisher?.[1]||(identifiers.some(x=>x.type==='publisher_number'&&/^BA\b/i.test(x.value))?'Bärenreiter':''));
+  const embeddedTags=[...String(info.Keywords||'').split(/[,;|]/),...String(info.Subject||'').split(/[,;|]/)].map(x=>x.trim()).filter(x=>x.length>1&&x.length<80);
+  const filenameTitle=metadataTitleSpecific(filename.title)&&metadataTitleUsable(filename.title)?filename.title:'';
+  const fallbackTitle=metadataTitleSpecific(extractedTitle)&&metadataTitleUsable(extractedTitle)?extractedTitle:(metadataTitleSpecific(d.title)&&metadataTitleUsable(d.title)?metadataTitleClean(d.title):'');
+  const primaryTitle=filenameTitle||fallbackTitle;
+  const titles=[primaryTitle,extractedTitle].filter((x,i,a)=>x&&metadataTitleIsSpecific(x)&&a.findIndex(y=>metadataTextKey(y)===metadataTextKey(x))===i);
+  const kind=metadataDetectDocumentKind(originalFilename||d.title,normalized,null,identifiers);
+  const contexts=titles.map(title=>({title,authors:pdfAuthors,isbn,publisher:pdfPublisher,year:pdfYear,identifiers}));
+  const external=await lookupBibliographicCandidate(contexts,identifiers,kind);
+  const accepted=metadataCandidateAccepted(external);
+  const finalKind=kind==='unknown'&&accepted&&external.documentKind?external.documentKind:kind;
+  const proposedTitle=accepted?external.title:primaryTitle;
+  const proposedAuthors=accepted&&external.authors?.length?external.authors:pdfAuthors;
+  const duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn,bibliographicIdentifiers:identifiers};
   const possibleDuplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
-  const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual',updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString()};
+  const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
+  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString()};
   if(!manual){
-   if(metadataTitleUsable(proposedTitle))updates.title=proposedTitle.slice(0,300);else if(metadataTitleUsable(d.title))updates.title=metadataTitleClean(d.title).slice(0,300);
-   if(proposedAuthors.length)updates.authors=proposedAuthors.slice(0,20);else if((d.authors||[]).length&&!oldAuthors.length)updates.authors=[];
-   if(isbn)updates.isbn=isbn;else if(accepted&&external.isbns?.[0])updates.isbn=external.isbns[0];
+   if(metadataTitleUsable(proposedTitle))updates.title=proposedTitle.slice(0,300);
+   if(proposedAuthors.length)updates.authors=proposedAuthors.slice(0,20);
+   else if((d.authors||[]).length&&!pdfAuthors.length)updates.authors=[];
+   if(isbn)updates.isbn=metadataValidIsbn(isbn);
+   else if(accepted&&external.isbns?.[0])updates.isbn=metadataValidIsbn(external.isbns[0]);
    if((accepted&&external.publisher)||pdfPublisher)updates.publisher=String((accepted&&external.publisher)||pdfPublisher).slice(0,200);
    if((accepted&&external.year)||pdfYear)updates.publication_year=(accepted&&external.year)||pdfYear;
-   const tags=accepted?[...new Set([...(external.tags||[]),...embeddedTags])].slice(0,30):embeddedTags;
-   if(tags.length&&(!(d.tags||[]).length||accepted))updates.tags=tags;
+   const tags=metadataBuildTags({filename:originalFilename||filename.raw,text:normalized,kind:finalKind,catalog:external,accepted,embeddedTags,publisher:(accepted&&external.publisher)||pdfPublisher,identifiers});
+   if(tags.length)updates.tags=tags;
    if(accepted&&external.description&&!d.description)updates.description=external.description;
-   if(!d.category||d.category==='General'||accepted)updates.category=metadataCategoryFromTags(tags,kind);
-   updates.metadata_source=(isbn||pdfPublisher||pdfYear||pageTitle)?'pdf_text':(embeddedTitle||infoAuthor||embeddedTags.length?'embedded':'filename');updates.metadata_reviewed=false;
-  }else{updates.metadata_source='manual';updates.metadata_reviewed=true}
-  const matchStatus=possibleDuplicates.length?'duplicate':accepted?'matched':external&&external.score>=55?'review':kind==='other'||kind==='periodical'||kind==='article'?'non_book':'unmatched';
-  updates.metadata_match_status=matchStatus;updates.metadata_confidence=external?external.score:null;updates.document_kind=kind;
-  updates.metadata_candidate=external&&!accepted?{...external,evidence:{filename:filename.raw,filenameTitle:filename.title,filenameAuthors:filename.authors,firstPagesTitle:extractedTitle,firstPagesAuthors:pdfAuthors,isbnFound:isbn,publisherFound:pdfPublisher,yearFound:pdfYear}}:null;
+   if(!d.category||d.category==='General'||accepted||finalKind!=='unknown')updates.category=metadataCategoryFromTags(tags,finalKind);
+   updates.bibliographic_identifiers=identifiers;
+   updates.metadata_source=(identifiers.length||pdfPublisher||pdfYear||pageTitle)?'pdf_text':(embeddedTitle||infoAuthor||embeddedTags.length?'embedded':'filename');
+   updates.metadata_reviewed=false;
+  }else{
+   updates.metadata_source='manual';
+   updates.metadata_reviewed=true;
+  }
+  const visibleCandidate=external&&external.score>=72?external:null;
+  const matchStatus=possibleDuplicates.length?'duplicate':accepted?'matched':visibleCandidate?'review':finalKind==='other'||finalKind==='periodical'||finalKind==='article'?'non_book':'unmatched';
+  updates.metadata_match_status=matchStatus;
+  updates.metadata_confidence=external?external.score:null;
+  updates.document_kind=finalKind;
+  updates.metadata_candidate=visibleCandidate&&!accepted?{
+   ...visibleCandidate,
+   evidence:{
+    filename:filename.raw,filenameTitle:filename.title,filenameAuthors:filename.authors,
+    firstPagesTitle:extractedTitle,firstPagesAuthors:pdfAuthors,isbnFound:isbn,publisherFound:pdfPublisher,
+    yearFound:pdfYear,identifiersFound:identifiers,repeatedLines,repeatedPageCount:sampledPages.length,sampledPages
+   }
+  }:null;
   updates.metadata_status=manual||accepted?'complete':'partial';
   if(possibleDuplicates.length)updates.metadata_error='Posible coincidencia con "'+String(possibleDuplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.';
-  else if(matchStatus==='review')updates.metadata_error='Se encontró una coincidencia de catálogo de '+external.score+'/100. Confirmá la ficha antes de aplicarla.';
-  else if(matchStatus==='non_book')updates.metadata_error='El nombre o las primeras páginas sugieren que podría no ser un libro. No se eliminó ni publicó automáticamente.';
-  const{error}=await db.from('documents').update(updates).eq('id',id);if(error)throw error;
-  return{...updates,possibleDuplicates,candidate:external||null,accepted,kind};
+  else if(matchStatus==='review')updates.metadata_error='Se encontró una posible coincidencia de catálogo de '+external.score+'/100. Confirmá título, autor e identificadores antes de aplicarla.';
+  else if(matchStatus==='non_book')updates.metadata_error='El documento parece ser una publicación no monográfica. Revisá su tipo antes de publicarlo.';
+  const{error}=await db.from('documents').update(updates).eq('id',id);
+  if(error)throw error;
+  return{...updates,possibleDuplicates,candidate:external||null,accepted,kind:finalKind,identifiers,repeatedLines,sampledPages};
  }finally{try{await task.destroy()}catch{}}
 }
 
