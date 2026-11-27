@@ -598,6 +598,7 @@ export default {
     }
 
     const pathname = new URL(request.url).pathname;
+    if (pathname === "/catalog/google-books" && request.method === "GET") return lookupGoogleBooks(request, env, headers);
     if (pathname === "/catalog/isbnlab" && request.method === "GET") return lookupIsbnLabBook(request, env, headers);
     if (pathname === "/catalog/melos" && request.method === "GET") return lookupMelosProduct(request, env, headers);
     if (pathname === "/upload/start" && request.method === "POST") return uploadStart(request, env, headers);
@@ -764,6 +765,83 @@ function melosExtractProduct(html, productUrl, expectedCode) {
     attributes,
     url: productUrl
   };
+}
+
+async function lookupGoogleBooks(request, env, headers) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  if (!env.GOOGLE_BOOKS_API_KEY) {
+    return jsonReply({
+      error: "Google Books API key is not configured. Add the GOOGLE_BOOKS_API_KEY Worker secret.",
+      code: "google_books_key_missing"
+    }, 503, headers);
+  }
+
+  const url = new URL(request.url);
+  const isbn = String(url.searchParams.get("isbn") || "").replace(/[\s-]/g, "").toUpperCase();
+  const title = String(url.searchParams.get("title") || "").trim().slice(0, 180);
+  const author = String(url.searchParams.get("author") || "").trim().slice(0, 120);
+  let query = "";
+  if (isbn) {
+    if (!/^(?:\d{9}[\dX]|\d{13})$/.test(isbn)) {
+      return jsonReply({ error: "A valid ISBN-10 or ISBN-13 is required.", code: "invalid_isbn" }, 400, headers);
+    }
+    query = "isbn:" + isbn;
+  } else if (title) {
+    query = 'intitle:"' + title.replace(/["<>]/g, " ") + '"';
+    if (author) query += ' inauthor:"' + author.replace(/["<>]/g, " ") + '"';
+  } else {
+    return jsonReply({ error: "An ISBN or title is required.", code: "missing_query" }, 400, headers);
+  }
+
+  const apiUrl = new URL("https://www.googleapis.com/books/v1/volumes");
+  apiUrl.searchParams.set("q", query);
+  apiUrl.searchParams.set("maxResults", "10");
+  apiUrl.searchParams.set("printType", "books");
+  apiUrl.searchParams.set("projection", "full");
+  apiUrl.searchParams.set("key", env.GOOGLE_BOOKS_API_KEY);
+
+  let upstream;
+  try {
+    upstream = await fetch(apiUrl.toString(), {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(12000)
+    });
+  } catch (error) {
+    console.error("Google Books request failed", error);
+    return jsonReply({
+      error: "Google Books request failed.",
+      code: "google_books_unavailable",
+      detail: String(error?.message || error).slice(0, 240)
+    }, 502, headers);
+  }
+
+  const retryHeader = upstream.headers.get("Retry-After");
+  const retryAfterSeconds = retryHeader === null ? null : Math.max(0, Number(retryHeader) || 0);
+  let payload = {};
+  try { payload = await upstream.json(); } catch {
+    return jsonReply({ error: "Google Books returned an invalid JSON response.", code: "invalid_upstream_response" }, 502, headers);
+  }
+  if (upstream.status === 429) {
+    return jsonReply({
+      error: payload?.error?.message || "Google Books request quota exceeded.",
+      code: "google_books_rate_limited",
+      retryAfterSeconds,
+      upstreamStatus: 429
+    }, 429, headers);
+  }
+  if (!upstream.ok) {
+    const message = payload?.error?.message || ("Google Books HTTP " + upstream.status);
+    return jsonReply({
+      error: message,
+      code: upstream.status === 400 || upstream.status === 403 ? "google_books_api_error" : "google_books_upstream_error",
+      upstreamStatus: upstream.status
+    }, upstream.status >= 500 ? 503 : 502, headers);
+  }
+  return jsonReply({
+    items: Array.isArray(payload.items) ? payload.items : [],
+    totalItems: Number(payload.totalItems) || 0
+  }, 200, headers);
 }
 
 async function lookupIsbnLabBook(request, env, headers) {
