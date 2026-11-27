@@ -734,6 +734,13 @@ function melosExtractProduct(html, productUrl, expectedCode) {
   const collaborators = rowValues(["Colaboradores"])
     .flatMap(x => x.split(/\s*(?:\n|;|\|)\s*/)).map(x => x.trim()).filter(Boolean);
   const pageCount = value(["Cantidad de paginas", "Cantidad de páginas", "Páginas"]);
+  const descriptionStart=lines.findIndex(line=>/^descripci[oó]n\s*:?$/i.test(line));
+  const descriptionEnd=lines.findIndex((line,index)=>index>descriptionStart&&/^informaci[oó]n adicional$/i.test(line));
+  const description=descriptionStart>=0?lines.slice(descriptionStart+1,descriptionEnd>descriptionStart?descriptionEnd:descriptionStart+12).join(" ").trim().slice(0,3000):"";
+  const issuuRaw=(html.match(/\bhref\s*=\s*["']([^"']*issuu\.com[^"']*)["']/i)||[])[1]||"";
+  let issuuUrl="";
+  try{const parsed=new URL(decodeMelosHtml(issuuRaw),"https://melos.com.ar");if(parsed.hostname==="issuu.com"||parsed.hostname.endsWith(".issuu.com"))issuuUrl=parsed.href;}catch{}
+  const documentKind=/^armon[ií]a$/i.test(instrument)&&/\b(?:libro|tratado|manual)\b/i.test(description)?"book":"music_score";
   const attributes = rows.map(row => ({ label: row.label, value: row.value }));
   const shippingWeight = (text.match(/\bPeso\s+(\d+(?:[.,]\d+)?\s*kg)\b/i) || [])[1] || "";
   const dimensions = (text.match(/\bDimensiones\s+([0-9.,\s×x]+(?:cm|mm)?)\b/i) || [])[1]?.trim() || "";
@@ -762,6 +769,9 @@ function melosExtractProduct(html, productUrl, expectedCode) {
     editionPageCount: pageCount.slice(0, 80),
     price: melosHtmlText(price).slice(0, 80),
     stock: stock.slice(0, 80),
+    description,
+    issuuUrl,
+    documentKind,
     attributes,
     url: productUrl
   };
