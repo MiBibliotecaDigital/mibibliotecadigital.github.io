@@ -736,7 +736,7 @@ function metadataNormalizeIdentifier(type,value){
   if(type==='ismn')return metadataValidIsmn(raw)||raw.replace(/[^0-9A-Z]/g,'').toUpperCase();
   if(type==='issn')return metadataValidIssn(raw)||raw.replace(/[^0-9Xx]/g,'').toUpperCase();
   if(type==='doi')return metadataNormalizeDoi(raw);
-  if(type==='publisher_number')return raw.toUpperCase().replace(/\s+/g,' ').replace(/\s*([-./])\s*/g,'$1').trim();
+  if(type==='publisher_number'){const upper=raw.toUpperCase(),compact=upper.replace(/[^A-Z0-9]/g,'');if(/^(?:BA|MEL)\d+$/.test(compact))return compact;return upper.replace(/\s+/g,' ').replace(/\s*([-./])\s*/g,'$1').trim();}
   if(type==='iswc')return raw.toUpperCase().replace(/[^A-Z0-9]/g,'');
   if(type==='oclc')return raw.replace(/[^0-9]/g,'');
   return raw;
