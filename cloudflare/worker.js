@@ -1,22 +1,6 @@
 const APP_ORIGIN_FALLBACK = "https://mibibliotecadigital.github.io";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/*
- * Temporary, read-only review access for the six private PDFs selected by the
- * library owner. The bearer token itself is not stored in this public source;
- * only its SHA-256 digest is. This route expires automatically.
- */
-const REVIEW_TOKEN_SHA256 = "d7bc9ced9dce3c5638c13c711ebf6aac694bd622fc8770bec6bd66264d3a60dd";
-const REVIEW_EXPIRES_AT = 1795761077;
-const REVIEW_FILES = new Map([
-  ["5ae9b7c6-a63c-4ed9-8ab7-cad72264dad7", "library/7ee04846-1fc4-4525-b776-78def5db1cc3.pdf"],
-  ["888dd553-5f58-4364-81cd-ccbd70ce507f", "library/072a5bda-43a3-4b10-9ca3-db123e3a6366.pdf"],
-  ["f6b9a78c-779e-46b3-ae71-1643c66cdaf9", "library/486aee44-843e-490f-ac59-cdb5f7e75988.pdf"],
-  ["fcf17e61-b95a-4624-8117-503d5436f74a", "library/77149bf2-2c0a-4391-8712-b71d0b9b5852.pdf"],
-  ["5ff2a261-9d41-4568-9de0-d598fb8931e2", "library/4b9913a3-cfc1-41f4-b73a-433764230d80.pdf"],
-  ["c3b7eced-719f-47e9-a004-813a395a019e", "library/4fb42bac-8d0a-4260-a7ec-e952d77dc3d2.pdf"]
-]);
-
 function corsHeaders(origin, appOrigin) {
   const headers = new Headers({
     "Vary": "Origin",
@@ -74,49 +58,6 @@ function jsonReply(value, status, headers) {
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
   headers.set("X-Content-Type-Options", "nosniff");
   return new Response(JSON.stringify(value), { status, headers });
-}
-
-async function serveReviewPdf(request, env, headers, token, documentId) {
-  if (Date.now() > REVIEW_EXPIRES_AT * 1000) {
-    return reply("Temporary review access expired", 410, headers);
-  }
-  const key = REVIEW_FILES.get(documentId);
-  if (!key || !env.BIBLIOTECA || !/^[A-Za-z0-9_-]{43}$/.test(token)) {
-    return reply("Not found", 404, headers);
-  }
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-  const actual = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
-  if (actual !== REVIEW_TOKEN_SHA256) return reply("Not found", 404, headers);
-
-  const metadata = await env.BIBLIOTECA.head(key);
-  if (!metadata) return reply("Document not found", 404, headers);
-  headers.set("Content-Type", "application/pdf");
-  headers.set("Content-Disposition", 'inline; filename="library-review.pdf"');
-  headers.set("Accept-Ranges", "bytes");
-  headers.set("Cache-Control", "private, no-store, no-cache, max-age=0, must-revalidate");
-  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
-  headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Referrer-Policy", "no-referrer");
-  headers.set("ETag", metadata.httpEtag);
-
-  if (request.method === "HEAD") {
-    headers.set("Content-Length", String(metadata.size));
-    return new Response(null, { status: 200, headers });
-  }
-  const range = parseRange(request.headers.get("Range"), metadata.size);
-  if (range?.invalid) {
-    headers.set("Content-Range", `bytes */${metadata.size}`);
-    return reply("Requested range is not satisfiable", 416, headers);
-  }
-  const object = await env.BIBLIOTECA.get(key, range ? { range: range.options } : undefined);
-  if (!object || !object.body) return reply("Document not found", 404, headers);
-  if (range) {
-    headers.set("Content-Length", String(range.length));
-    headers.set("Content-Range", `bytes ${range.start}-${range.end}/${metadata.size}`);
-    return new Response(object.body, { status: 206, headers });
-  }
-  headers.set("Content-Length", String(metadata.size));
-  return new Response(object.body, { status: 200, headers });
 }
 
 async function requireAdmin(request, env, headers) {
@@ -199,7 +140,8 @@ async function uploadStart(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
   const fileSize = Number(request.headers.get("X-File-Size"));
-  if (!Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE) {
+  if (!Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE ||
+      (fileFingerprint != null && (typeof fileFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(fileFingerprint)))) {
     return reply("Invalid file size. Maximum supported size is 2 GiB.", 413, headers);
   }
   const key = "library/" + crypto.randomUUID() + ".pdf";
@@ -259,7 +201,7 @@ async function uploadComplete(request, env, headers) {
   let body;
   try { body = await request.json(); }
   catch { return reply("Invalid completion data.", 400, headers); }
-  const { key, uploadId, parts, fileSize, fileName } = body || {};
+  const { key, uploadId, parts, fileSize, fileName, fileFingerprint } = body || {};
   const safeFileName = typeof fileName === "string" ? fileName.slice(0, 255) : "";
   const metadata = normalizeDocumentMetadata(body?.metadata, titleFromFilename(safeFileName));
   if (!validUploadKey(key) || typeof uploadId !== "string" || !uploadId ||
@@ -300,6 +242,7 @@ async function uploadComplete(request, env, headers) {
 
   const document = {
     ...metadata,
+    file_fingerprint: fileFingerprint || null,
     provider: "r2",
     r2_key: key,
     mime_type: "application/pdf",
@@ -425,17 +368,6 @@ export default {
       } catch (error) {
         console.error("Document deletion failed", error);
         return reply("Unable to delete document", 502, headers);
-      }
-    }
-
-    const reviewMatch = pathname.match(/^\/review\/([A-Za-z0-9_-]{43})\/([^/]+)$/);
-    if (reviewMatch && (request.method === "GET" || request.method === "HEAD")) {
-      if (!UUID_RE.test(reviewMatch[2])) return reply("Not found", 404, headers);
-      try {
-        return await serveReviewPdf(request, env, headers, reviewMatch[1], reviewMatch[2]);
-      } catch (error) {
-        console.error("Temporary review retrieval failed", error);
-        return reply("Unable to retrieve document", 502, headers);
       }
     }
 
