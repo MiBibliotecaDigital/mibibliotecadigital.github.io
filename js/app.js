@@ -247,9 +247,10 @@ function bookManagementRows(search='',status='all'){
 function booksPage(){
   const all=[...books,...pendingDocs];
   const pendingMetadata=all.filter(b=>b.provider==='r2'&&!b.metadataReviewed&&['pending','processing','partial','error'].includes(b.metadataStatus)).length;
+  const reanalyzeMetadata=all.filter(b=>b.provider==='r2'&&!b.metadataReviewed&&b.uploadStatus==='stored').length;
   const unfinishedUploads=all.filter(b=>b.provider==='r2'&&b.uploadStatus!=='stored').length;
   const queueText=metadataInProgress?'Metadatos: '+metadataQueueProgress.done+'/'+metadataQueueProgress.total+' · errores: '+metadataQueueProgress.failed:(pendingMetadata?pendingMetadata+' ficha(s) pendientes de análisis':'No hay metadatos pendientes');
-  return '<div class="heading"><div><h1>Administrar libros</h1><p>Los PDFs guardados se conservan aunque su ficha bibliográfica todavía no esté completa.</p></div><div class="books-admin-actions"><button class="secondary" id="reconcile-storage">Recuperar PDFs no registrados</button><button class="primary" id="run-metadata" '+(metadataInProgress||!pendingMetadata?'disabled':'')+'>Analizar metadatos pendientes ('+pendingMetadata+')</button></div></div><div class="metadata-queue-status" id="metadata-queue-status" aria-live="polite">'+esc(queueText)+'</div>'+(unfinishedUploads?'<p class="notice">Hay '+unfinishedUploads+' carga(s) incompleta(s). Podés revisar y eliminar los registros que no tengan PDF completo.</p>':'')+'<div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="panel"><table class="pending-table books-admin-table"><thead><tr><th>Libro / Autores</th><th>ISBN</th><th>Colección</th><th>Catálogo</th><th>Subida</th><th>Metadatos</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
+  return '<div class="heading"><div><h1>Administrar libros</h1><p>Los PDFs guardados se conservan aunque su ficha bibliográfica todavía no esté completa.</p></div><div class="books-admin-actions"><button class="secondary" id="reconcile-storage">Recuperar PDFs no registrados</button><button class="primary" id="run-metadata" '+(metadataInProgress||!pendingMetadata?'disabled':'')+'>Analizar metadatos pendientes ('+pendingMetadata+')</button><button class="secondary" id="rebuild-metadata" '+(metadataInProgress||!reanalyzeMetadata?'disabled':'')+'>Revisar todos los PDFs ('+reanalyzeMetadata+')</button></div></div><div class="metadata-queue-status" id="metadata-queue-status" aria-live="polite">'+esc(queueText)+'</div>'+(unfinishedUploads?'<p class="notice">Hay '+unfinishedUploads+' carga(s) incompleta(s). Podés revisar y eliminar los registros que no tengan PDF completo.</p>':'')+'<div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="panel"><table class="pending-table books-admin-table"><thead><tr><th>Libro / Autores</th><th>ISBN</th><th>Colección</th><th>Catálogo</th><th>Subida</th><th>Metadatos</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
 }
 function refreshMetadataQueueBanner(){
   const status=document.querySelector('#metadata-queue-status');
@@ -265,6 +266,7 @@ function bindBookManagement(){
   const refresh=()=>{if(body){body.innerHTML=bookManagementRows(search?.value||'',status?.value||'all');bindActions()}};
   search?.addEventListener('input',refresh);status?.addEventListener('change',refresh);
   document.querySelector('#run-metadata')?.addEventListener('click',()=>runMetadataQueue());
+  document.querySelector('#rebuild-metadata')?.addEventListener('click',()=>runMetadataQueue(null,null,true));
   document.querySelector('#reconcile-storage')?.addEventListener('click',async()=>{
     const button=document.querySelector('#reconcile-storage');if(button)button.disabled=true;
     try{
@@ -284,14 +286,14 @@ async function reconcileStorageFromWorker(tokenOverride=null){
   if(!response.ok)throw new Error(data.error||data.message||'La pasarela no pudo recuperar los archivos.');
   return data;
 }
-async function runMetadataQueue(ids=null,tokenOverride=null){
+async function runMetadataQueue(ids=null,tokenOverride=null,reprocessAll=false){
   if(metadataInProgress)return;
   const {data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;
   if(!token)return toast('Tu sesión expiró. Inicia sesión nuevamente.');
   let request=db.from('documents').select('id,title')
-    .eq('provider','r2').eq('metadata_reviewed',false)
-    .eq('upload_status','stored').in('metadata_status',['pending','processing','partial','error'])
+    .eq('provider','r2').eq('metadata_reviewed',false).eq('upload_status','stored')
     .order('created_at',{ascending:true}).limit(500);
+  if(!reprocessAll)request=request.in('metadata_status',['pending','processing','partial','error']);
   if(Array.isArray(ids)&&ids.length)request=request.in('id',ids);
   const {data:documents,error}=await request;
   if(error)return toast('No se pudo cargar la cola de metadatos: '+error.message);
@@ -327,9 +329,10 @@ async function runMetadataQueue(ids=null,tokenOverride=null){
   await Promise.all(Array.from({length:Math.min(3,queue.length)},worker));
   metadataInProgress=false;
   refreshMetadataQueueBanner();
-  toast('Análisis de metadatos terminado: '+metadataQueueProgress.done+' PDF(s), '+metadataQueueProgress.failed+' error(es).');
+  toast((reprocessAll?'Revisión completa':'Análisis de metadatos')+' terminado: '+metadataQueueProgress.done+' PDF(s), '+metadataQueueProgress.failed+' error(es).');
   if(me&&page==='books')await loadUser(me);
 }
+
 async function uploadMultiple(e){
   e.preventDefault();
   if(role!=='admin'||!live)return toast('Solo el administrador puede cargar documentos.');
@@ -518,45 +521,237 @@ function addUser(){const m=document.createElement('div');m.className='modal-bg';
 function editUser(id){const u=users.find(x=>x.id===id);if(!u)return;const m=document.createElement('div');m.className='modal-bg';m.innerHTML='<section class="modal user-modal"><header><b>Editar usuario</b><button id="close" type="button">Cerrar</button></header><form id="edit"><label>Nombre visible<input name="fullName" maxlength="120" value="'+esc(u.name)+'" required></label><label>Username<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" value="'+esc(u.username||'')+'"></label><label>Rol<select name="role"><option value="reader" '+(u.role==='reader'?'selected':'')+'>Lector</option><option value="editor" '+(u.role==='editor'?'selected':'')+'>Editor</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrador</option></select></label><label>Estado<select name="status"><option value="active" '+(u.status==='active'?'selected':'')+'>Activo</option><option value="suspended" '+(u.status==='suspended'?'selected':'')+'>Suspendido</option></select></label><p class="muted">Correo: '+esc(u.email)+' · el usuario puede cambiarlo desde Mi cuenta.</p><button class="primary">Guardar cambios</button></form></section>';document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.querySelector('#edit').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.currentTarget));try{await adminUsersAction({action:'update',userId:id,...body});toast('Usuario actualizado.');m.remove();await loadUser(me)}catch(error){toast('No se pudo actualizar: '+error.message)}}}
 async function deleteUser(id){const u=users.find(x=>x.id===id);if(!u||id===me.id)return;if(!confirm('¿Eliminar la cuenta de '+(u.name||u.email)+'? Esta acción no se puede deshacer.'))return;try{await adminUsersAction({action:'delete',userId:id});toast('Usuario eliminado.');await loadUser(me)}catch(error){toast('No se pudo eliminar: '+error.message)}}
 async function deleteDocument(id){const d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!d||role!=='admin')return;if(!confirm('¿Eliminar definitivamente "'+d.title+'" y su PDF privado? Esta acción no se puede deshacer.'))return;const {data:{session}}=await db.auth.getSession();if(!session?.access_token)return login('Tu sesión expiró.');const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');try{const response=await fetch(base+'/document/'+encodeURIComponent(id),{method:'DELETE',headers:{Authorization:'Bearer '+session.access_token}});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'No se pudo eliminar.');toast(result.storageCleanupPending?'Registro eliminado; el almacenamiento requiere limpieza manual.':'Documento y archivo eliminados.');await loadUser(me)}catch(error){toast('Error al eliminar: '+error.message)}}
+function metadataTextKey(value){return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()}
+function metadataTitleClean(value){return String(value||'').replace(/\s+/g,' ').trim().replace(/\s*(?:p[aá]g(?:ina)?\.?\s*\d+|page\s+\d+)\s*$/i,'').trim()}
+function metadataTitleUsable(value){
+  const title=metadataTitleClean(value),key=metadataTextKey(title);
+  if(title.length<4||title.length>180||title.includes('�')||(/�/g.test(title)&&((title.match(/�/g)||[]).length>1)))return false;
+  if(/copyright|derechos reservados|isbn|issn|catalogaci[oó]n|catalogacion|c[oó]digo de catalogaci[oó]n|copyright|impreso en|printed in|buenos aires.{0,30}argentina/i.test(title))return false;
+  if(/^(?:versi[oó]n comisionada por sadaic|vol(?:ume)?\.?\s*\d|n[úu]mero\s*\d|contents|[íi]ndice|contenido|bibliograf[ií]a|editorial|ediciones|published by|www\.|https?:)/i.test(title))return false;
+  if(/^(?:\d+\s*)?ba\s*[-.]?\s*\d{3,}$/i.test(title)||/^d\s+y\s+k\s+i\s+n\s+s\s+o\s+n/i.test(title))return false;
+  if(/^c[oó]digo de catalogaci[oó]n/i.test(title)||/^versi[oó]n comisionada/i.test(title))return false;
+  if(key.split(' ').filter(Boolean).length<1)return false;
+  return true;
+}
+function metadataNameLike(value){
+  const s=String(value||'').replace(/[©®].*$/,'').trim(),words=s.split(/\s+/).filter(Boolean);
+  if(words.length<2||words.length>5||/copyright|buenos aires|argentina|editorial|ricordi|musicales|sadaic|isbn/i.test(s))return false;
+  const connectors=new Set(['de','del','la','las','los','y','e','da','do','van','von','the','of']);
+  const valid=words.filter(w=>!connectors.has(w.toLowerCase())).every(w=>/^(?:[A-ZÁÉÍÓÚÜÑ]\.?|[A-ZÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ.'’\-]+)$/.test(w));
+  return valid&&words.filter(w=>!connectors.has(w.toLowerCase())).length>=2;
+}
+function metadataAuthorClean(value){
+  let s=String(value||'').replace(/(?:©|copyright|derechos reservados).*/i,'').replace(/\s+/g,' ').trim();
+  s=s.replace(/^(?:autor(?:es)?|por|escrito por|written by|by|compositor(?:es)?|composer|composed by|m[uú]sica de|letra y m[uú]sica|arr(?:eglo)?(?: de| by)?)\s*[:\-]?\s*/i,'').trim();
+  return s;
+}
+function metadataAuthorUsable(value){
+  const s=metadataAuthorClean(value);
+  return !!s&&s.length<=120&&!/[�]/.test(s)&&!/[.!?].{20,}/.test(s)&&metadataNameLike(s);
+}
+function metadataValidIsbn(value){
+  const v=String(value||'').replace(/[^0-9Xx]/g,'').toUpperCase();
+  if(v.length===13&&/^\d{13}$/.test(v)){
+    let sum=0;for(let i=0;i<12;i++)sum+=Number(v[i])*(i%2?3:1);
+    return (10-sum%10)%10===Number(v[12])?v:null;
+  }
+  if(v.length===10&&/^\d{9}[\dX]$/.test(v)){
+    let sum=0;for(let i=0;i<9;i++)sum+=Number(v[i])*(10-i);
+    sum+=v[9]==='X'?10:Number(v[9]);
+    return sum%11===0?v:null;
+  }
+  return null;
+}
+function metadataPageLines(items,pageNumber){
+  const entries=(items||[]).filter(x=>String(x.str||'').trim()).map(x=>{
+    const tr=x.transform||[],font=Math.max(1,Number(x.height)||Math.hypot(Number(tr[2])||0,Number(tr[3])||0)||1);
+    return {text:String(x.str||'').trim(),x:Number(tr[4])||0,y:Number(tr[5])||0,font};
+  }).sort((a,b)=>b.y-a.y||a.x-b.x);
+  const groups=[];
+  for(const entry of entries){
+    let group=groups.find(g=>Math.abs(g.y-entry.y)<=Math.max(2,Math.min(4,entry.font*.22)));
+    if(!group){group={y:entry.y,items:[]};groups.push(group)}
+    group.items.push(entry);
+  }
+  return groups.map(g=>{
+    const parts=g.items.sort((a,b)=>a.x-b.x),text=parts.map(x=>x.text).join(' ').replace(/\s+/g,' ').trim();
+    return {text,page:pageNumber,y:g.y,font:Math.max(...parts.map(x=>x.font))};
+  }).filter(x=>x.text.length>1);
+}
+function metadataTitleSimilarity(a,b){
+  const aa=metadataTextKey(a).split(' ').filter(x=>x.length>1),bb=metadataTextKey(b).split(' ').filter(x=>x.length>1);
+  if(!aa.length||!bb.length)return 0;
+  if(aa.join(' ')===bb.join(' '))return 1;
+  const uniqueA=[...new Set(aa)],uniqueB=[...new Set(bb)],common=uniqueA.filter(x=>uniqueB.includes(x)).length;
+  return common/Math.max(uniqueA.length,uniqueB.length);
+}
 async function lookupIsbnMetadata(isbn){
-  const clean=String(isbn||'').replace(/[^0-9Xx]/g,'').toUpperCase();
-  if(![10,13].includes(clean.length))return null;
+  const clean=metadataValidIsbn(isbn);
+  if(!clean)return null;
   const timeout=()=>AbortSignal.timeout(8000);
   try{
     const url='https://www.googleapis.com/books/v1/volumes?q='+encodeURIComponent('isbn:'+clean)+'&maxResults=5';
     const response=await fetch(url,{signal:timeout()});
     if(response.ok){
       const data=await response.json();
-      const candidates=(data.items||[]).map(x=>x.volumeInfo||{}).filter(v=>{
-        const ids=(v.industryIdentifiers||[]).map(x=>String(x.identifier||'').replace(/[^0-9Xx]/g,'').toUpperCase());
-        return !ids.length||ids.includes(clean);
+      const v=(data.items||[]).map(x=>x.volumeInfo||{}).find(volume=>{
+        const ids=(volume.industryIdentifiers||[]).map(x=>metadataValidIsbn(x.identifier)).filter(Boolean);
+        return ids.includes(clean);
       });
-      const v=candidates[0];
       if(v){
         const date=String(v.publishedDate||'').match(/(?:19|20)\d{2}/);
         const categories=(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean);
         const description=String(v.description||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim().slice(0,3000);
-        return {title:v.title||'',authors:v.authors||[],publisher:v.publisher||'',year:date?Number(date[0]):null,description,tags:categories,pageCount:v.pageCount||null,source:'Google Books'};
+        return {title:v.title||'',authors:v.authors||[],publisher:v.publisher||'',year:date?Number(date[0]):null,description,tags:categories,pageCount:v.pageCount||null,source:'Google Books',match:'isbn'};
       }
     }
   }catch(error){console.info('Google Books ISBN lookup unavailable:',error?.message||error)}
   try{
     const response=await fetch('https://openlibrary.org/isbn/'+encodeURIComponent(clean)+'.json',{signal:timeout()});
     if(response.ok){
-      const v=await response.json();
-      const authors=[];
+      const v=await response.json(),authors=[];
       for(const item of (v.authors||[]).slice(0,5)){
         if(item?.name){authors.push(String(item.name));continue}
-        const key=item?.key;
-        if(!key)continue;
+        const key=item?.key;if(!key)continue;
         try{const ar=await fetch('https://openlibrary.org'+key+'.json',{signal:timeout()});if(ar.ok){const a=await ar.json();if(a.name)authors.push(a.name)}}catch{}
       }
       const subjects=(v.subjects||[]).map(x=>typeof x==='string'?x:(x?.name||'')).filter(Boolean).slice(0,30);
       const date=String(v.publish_date||'').match(/(?:19|20)\d{2}/);
-      return {title:v.title||'',authors,publisher:(v.publishers||[]).map(x=>typeof x==='string'?x:x?.name).filter(Boolean)[0]||'',year:date?Number(date[0]):null,description:typeof v.description==='string'?v.description:String(v.description?.value||''),tags:subjects,pageCount:v.number_of_pages||null,source:'Open Library'};
+      return {title:v.title||'',authors,publisher:(v.publishers||[]).map(x=>typeof x==='string'?x:x?.name).filter(Boolean)[0]||'',year:date?Number(date[0]):null,description:typeof v.description==='string'?v.description:String(v.description?.value||''),tags:subjects,pageCount:v.number_of_pages||null,source:'Open Library',match:'isbn'};
     }
   }catch(error){console.info('Open Library ISBN lookup unavailable:',error?.message||error)}
   return null;
+}
+async function lookupTitleMetadata(title,authors=[]){
+  if(!metadataTitleUsable(title))return null;
+  const url='https://www.googleapis.com/books/v1/volumes?q='+encodeURIComponent('intitle:"'+title+'"')+'&maxResults=5&printType=books';
+  try{
+    const response=await fetch(url,{signal:AbortSignal.timeout(8000)});
+    if(!response.ok)return null;
+    const data=await response.json(),expected=(authors||[]).map(x=>metadataTextKey(x).split(' ').filter(Boolean).pop()).filter(Boolean);
+    const candidates=(data.items||[]).map(item=>{
+      const v=item.volumeInfo||{},score=metadataTitleSimilarity(title,v.title||''),found=(v.authors||[]).map(x=>metadataTextKey(x).split(' ').filter(Boolean).pop());
+      const authorMatch=!expected.length||!found.length||expected.some(x=>found.includes(x));
+      return {v,score,authorMatch};
+    }).filter(x=>x.score>=.72&&x.authorMatch).sort((a,b)=>b.score-a.score);
+    const v=candidates[0]?.v;if(!v)return null;
+    const date=String(v.publishedDate||'').match(/(?:19|20)\d{2}/);
+    const description=String(v.description||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim().slice(0,3000);
+    return {title:v.title||'',authors:v.authors||[],publisher:v.publisher||'',year:date?Number(date[0]):null,description,tags:(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean),pageCount:v.pageCount||null,source:'Google Books',match:'title'};
+  }catch(error){console.info('Google Books title lookup unavailable:',error?.message||error);return null}
+}
+async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additionalCandidates=[]){
+  let d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
+  if(!d){
+    const {data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed,metadata_status,metadata_error,upload_status,original_filename').eq('id',id).single();
+    if(error||!row)throw error||new Error('Documento no encontrado.');
+    d={id:row.id,title:row.title,authors:row.authors||[],year:row.publication_year||'',category:row.category||'General',pageCount:row.page_count||0,provider:row.provider,description:row.description||'',tags:row.tags||[],isbn:row.isbn||'',publisher:row.publisher||'',metadataSource:row.metadata_source||'filename',metadataReviewed:!!row.metadata_reviewed,metadataStatus:row.metadata_status||'pending',metadataError:row.metadata_error||'',uploadStatus:row.upload_status||'stored'};
+  }
+  if(d.provider!=='r2')return {};
+  if(d.uploadStatus&&d.uploadStatus!=='stored')throw new Error('El PDF todavía no está marcado como guardado en R2.');
+  const {data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;
+  if(!token)throw new Error('Sesión vencida.');
+  const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+  const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);
+  const task=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
+  try{
+    const pdf=await task.promise,meta=await pdf.getMetadata(),info=meta?.info||{},pageLines=[];
+    let text='';
+    for(let n=1;n<=Math.min(pdf.numPages,8);n++){
+      const page=await pdf.getPage(n),tc=await page.getTextContent(),lines=metadataPageLines(tc.items,n);
+      pageLines.push(...lines);
+      text+=lines.map(x=>x.text).join('\n')+'\n';
+    }
+    const normalized=[text,info.Subject||'',info.Keywords||''].join('\n').replace(/[\t\u00a0]+/g,' ').replace(/ {2,}/g,' ').replace(/\r/g,'\n');
+    const infoTitle=metadataTitleClean(info.Title||'');
+    const titleLines=pageLines.filter(x=>x.page<=4&&metadataTitleUsable(x.text)&&!metadataNameLike(x.text));
+    const maxFont=Math.max(1,...titleLines.filter(x=>x.page===1).map(x=>x.font));
+    titleLines.sort((a,b)=>{
+      const score=x=>(x.font/maxFont)*4+(x.page===1?2:0)-Math.max(0,x.text.length-80)/80;
+      return score(b)-score(a);
+    });
+    const extractedTitle=metadataTitleUsable(infoTitle)?infoTitle:(titleLines[0]?.text||'');
+    const authorCandidates=[];
+    const authorLabel=/^(?:autor(?:es)?|por|escrito por|written by|by|compositor(?:es)?|composer|composed by|m[uú]sica de|letra y m[uú]sica|lyrics(?: and music)? by|arr(?:eglo)?(?: de| by)?)\s*[:\-]?\s*(.{3,120})$/i;
+    for(const line of pageLines.filter(x=>x.page<=4)){
+      const labelMatch=line.text.match(authorLabel);
+      if(labelMatch){const value=metadataAuthorClean(labelMatch[1]);if(metadataAuthorUsable(value))authorCandidates.push(value)}
+      else if(line.page<=2&&metadataNameLike(line.text)&&metadataTextKey(line.text)!==metadataTextKey(extractedTitle)){
+        const value=metadataAuthorClean(line.text);if(metadataAuthorUsable(value))authorCandidates.push(value);
+      }
+    }
+    const infoAuthor=String(info.Author||'').trim();
+    if(infoAuthor&&!/[�]/.test(infoAuthor)&&infoAuthor.length<=120){
+      const pieces=infoAuthor.split(';').map(metadataAuthorClean).filter(metadataAuthorUsable);
+      authorCandidates.unshift(...pieces);
+    }
+    const pdfAuthors=[...new Set(authorCandidates)].slice(0,10);
+    const isbnLabel=normalized.match(/ISBN(?:-1[03])?\s*[:\-]?\s*([0-9Xx][0-9Xx\s-]{8,20})/i);
+    let isbn=isbnLabel?metadataValidIsbn(isbnLabel[1]):null;
+    if(!isbn){
+      const isbn13Candidates=normalized.match(/97[89](?:[\s-]?\d){10}/g)||[];
+      isbn=isbn13Candidates.map(metadataValidIsbn).find(Boolean)||null;
+    }
+    const oldIsbn=metadataValidIsbn(d.isbn);
+    if(!isbn)isbn=oldIsbn;
+    const yearExplicit=normalized.match(/(?:edici[oó]n(?:\s+(?:de|del|año))?|publicad[oa]|publicaci[oó]n|impres[oa]|printed|published|primera edici[oó]n)\D{0,35}((?:19|20)\d{2})/i);
+    const yearCopyright=normalized.match(/(?:©|copyright|derechos reservados)\D{0,35}((?:18|19|20)\d{2})/i);
+    const pdfYear=yearExplicit?Number(yearExplicit[1]):yearCopyright?Number(yearCopyright[1]):null;
+    const publisherLine=pageLines.find(x=>/^(?:editorial|ediciones|publisher|published by)\b/i.test(x.text)&&!/(?:copyright|derechos reservados)/i.test(x.text));
+    const pdfPublisher=publisherLine?publisherLine.text.replace(/^(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*/i,'').replace(/\s+(?:buenos aires|madrid|barcelona|argentina|españa)\b.*$/i,'').trim().slice(0,160):'';
+    const embeddedTags=String(info.Keywords||'').split(/[,;|]/).map(x=>x.trim()).filter(x=>x.length>1&&x.length<50);
+    const lower=normalized.toLowerCase(),taxonomy=[['guitarra',['guitarra','guitar','tablatura','fretboard']],['piano',['piano','teclado','keyboard']],['armonía',['armonía','armonia','harmony','acordes']],['teoría musical',['teoría musical','teoria musical','escalas','modos griegos','contrapunto']],['partituras',['partitura','score','pentagrama','notación musical','notacion musical']],['canto y voz',['canto','voz','vocal','coral','coro']],['jazz',['jazz','bebop','swing','blues']]];
+    const pdfTags=taxonomy.filter(([_,terms])=>terms.some(term=>lower.includes(term))).map(([tag])=>tag);
+    const candidateTitle=extractedTitle|| (metadataTitleUsable(d.title)?metadataTitleClean(d.title):'');
+    let external=isbn?await lookupIsbnMetadata(isbn):null;
+    if(!external&&metadataTitleUsable(candidateTitle))external=await lookupTitleMetadata(candidateTitle,pdfAuthors);
+    const isManual=d.metadataReviewed||d.metadataSource==='manual';
+    const externalTitle=external?.title&&metadataTitleUsable(external.title)?metadataTitleClean(external.title):'';
+    const resolvedTitle=externalTitle||candidateTitle;
+    const resolvedAuthors=(external?.authors||[]).filter(metadataAuthorUsable).length?(external.authors||[]).filter(metadataAuthorUsable):pdfAuthors;
+    const resolvedYear=external?.year||pdfYear;
+    const resolvedPublisher=external?.publisher||pdfPublisher;
+    const externalTags=external?.tags||[];
+    const allTags=[...new Set([...embeddedTags,...pdfTags,...externalTags].map(x=>String(x).trim()).filter(x=>x.length>1&&x.length<80))].slice(0,30);
+    const combinedText=(allTags.join(' ')+' '+lower).toLowerCase();
+    let inferredCategory=d.category;
+    if(combinedText.includes('guitarra')||combinedText.includes('guitar'))inferredCategory='Partituras para guitarra';
+    else if(combinedText.includes('piano'))inferredCategory='Música para piano';
+    else if(combinedText.includes('jazz'))inferredCategory='Jazz';
+    else if(combinedText.includes('music')||combinedText.includes('música')||combinedText.includes('musica'))inferredCategory='Música';
+    else if(allTags.length)inferredCategory=allTags[0].slice(0,100);
+    const updates={page_count:pdf.numPages,metadata_error:null};
+    if(!isManual){
+      const oldTitle=metadataTitleClean(d.title),oldTitleGood=metadataTitleUsable(oldTitle);
+      if(metadataTitleUsable(resolvedTitle)&&(!oldTitleGood||external?.match==='isbn'||(oldTitle&&/p[aá]g(?:ina)?\.?\s*\d+$/i.test(d.title||''))))updates.title=resolvedTitle.slice(0,300);
+      const oldAuthors=(d.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable);
+      if(resolvedAuthors.length&&(!oldAuthors.length||external?.match==='isbn'))updates.authors=resolvedAuthors.slice(0,20);
+      else if((d.authors||[]).length&&!oldAuthors.length)updates.authors=[];
+      if(resolvedYear&&(!d.year||external?.match==='isbn'))updates.publication_year=resolvedYear;
+      if(isbn&&isbn!==oldIsbn)updates.isbn=isbn;
+      else if(d.isbn&&!oldIsbn)updates.isbn=null;
+      if(resolvedPublisher&&(!d.publisher||external?.match==='isbn'))updates.publisher=String(resolvedPublisher).slice(0,200);
+      if((!d.category||d.category==='General')&&allTags.length)updates.category=inferredCategory;
+      if(!(d.tags||[]).length&&allTags.length)updates.tags=allTags;
+      const externalDescription=String(external?.description||'').trim();
+      if(!d.description&&(externalDescription||info.Subject))updates.description=(externalDescription||String(info.Subject||'')).slice(0,3000);
+      const finalTitle=updates.title||d.title,finalAuthors=updates.authors||oldAuthors,finalIsbn=updates.isbn===null?'':(updates.isbn||d.isbn),finalYear=updates.publication_year||d.year,finalPublisher=updates.publisher||d.publisher,finalTags=updates.tags||d.tags||[];
+      const hasSupport=finalAuthors.length||finalIsbn||finalYear||finalPublisher||finalTags.length||externalDescription;
+      updates.metadata_status=metadataTitleUsable(finalTitle)&&hasSupport?'complete':'partial';
+      updates.metadata_source=(infoTitle||infoAuthor)?'embedded':'pdf_text';
+      updates.metadata_reviewed=false;
+    }else{
+      updates.metadata_source='manual';
+      updates.metadata_reviewed=true;
+      updates.metadata_status='complete';
+    }
+    const {error}=await db.from('documents').update(updates).eq('id',id);
+    if(error)throw error;
+    const candidate={...d,...updates,title:updates.title||d.title,authors:updates.authors||d.authors,isbn:updates.isbn||d.isbn};
+    const possibleDuplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&bookDuplicateMatch(candidate,[other]));
+    return {...updates,isbnLookup:external?.match==='isbn',metadataProvider:external?.source||null,possibleDuplicates,candidate};
+  }finally{try{await task.destroy()}catch{}}
 }
 
 async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additionalCandidates=[]){
