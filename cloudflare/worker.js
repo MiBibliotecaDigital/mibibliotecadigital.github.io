@@ -736,8 +736,12 @@ function melosExtractProduct(html, productUrl, expectedCode) {
   const pageCount = value(["Cantidad de paginas", "Cantidad de páginas", "Páginas"]);
   const descriptionStart=lines.findIndex(line=>/^descripci[oó]n\s*:?$/i.test(line));
   const descriptionEnd=lines.findIndex((line,index)=>index>descriptionStart&&/^informaci[oó]n adicional$/i.test(line));
-  const description=descriptionStart>=0?lines.slice(descriptionStart+1,descriptionEnd>descriptionStart?descriptionEnd:descriptionStart+12).join(" ").trim().slice(0,3000):"";
-  const issuuRaw=(html.match(/\bhref\s*=\s*["']([^"']*issuu\.com[^"']*)["']/i)||[])[1]||"";
+  const description=(
+    melosReadField(lines,["Descripción"])||
+    (descriptionStart>=0?lines.slice(descriptionStart+1,descriptionEnd>descriptionStart?descriptionEnd:descriptionStart+12).join(" ").trim():"")
+  ).slice(0,3000);
+  const issuuRaw=(html.match(/\bhref\s*=\s*["']([^"']*issuu\.com[^"']*)["']/i)||[])[1]||
+    (text.match(/https?:\/\/(?:www\.)?issuu\.com\/[^\s<>"']+/i)||[])[0]||"";
   let issuuUrl="";
   try{const parsed=new URL(decodeMelosHtml(issuuRaw),"https://melos.com.ar");if(parsed.hostname==="issuu.com"||parsed.hostname.endsWith(".issuu.com"))issuuUrl=parsed.href;}catch{}
   const documentKind=/^armon[ií]a$/i.test(instrument)&&/\b(?:libro|tratado|manual)\b/i.test(description)?"book":"music_score";
