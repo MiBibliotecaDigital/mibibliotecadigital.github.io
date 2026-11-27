@@ -16,8 +16,8 @@ GitHub Settings > Pages > Deploy from a branch > main > /(root). URL: https://mi
 5. En Cloudflare Workers, crear un Worker desde `cloudflare/worker.js`; usar `wrangler.toml` como referencia de configuración y enlazar el bucket privado existente mediante binding R2 llamado `BIBLIOTECA`.
 6. Configurar variables del Worker: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (o anon key compatible), `APP_ORIGIN=https://mibibliotecadigital.github.io`.
 7. Configurar `js/config.js` con Supabase Project URL, publishable/anon key y URL del Worker en `pdfGatewayUrl`; establecer `demoMode:false`. Nunca publicar service-role ni credenciales S3.
-8. Crear un token R2 limitado al bucket para cargas/administración desde un entorno confiable. El Worker usa el binding R2 y no necesita claves S3.
-9. Cargar PDF privados a R2 y registrar su `r2_key` en `public.documents`. Mantener desactivadas Public Development URL y cualquier publicación de dominio del bucket.
+8. El Worker usa el binding R2 `BIBLIOTECA`; no necesita claves S3 ni tokens R2. Mantener el bucket privado, sin Public Development URL ni dominio público.
+9. Las cargas se realizan desde el panel de administrador mediante la ruta multipart del Worker. Cada operación vuelve a verificar el JWT de Supabase y el perfil activo con rol `admin`. Los archivos se transfieren en partes de 10 MiB (límite actual de la interfaz: 2 GiB) y solo se publican en el catálogo después de completar R2 y registrar sus metadatos en `public.documents`. Si el registro falla, el Worker elimina el objeto para evitar archivos huérfanos.
 10. Verificar con cuentas admin, lector autorizado, lector sin grant y usuario sin sesión. La pasarela aplica la política RLS de `documents` en cada GET/HEAD y cada Range.
 
 ## Entrega protegida de PDF
