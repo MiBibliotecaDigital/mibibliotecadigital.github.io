@@ -10,3 +10,60 @@
 .pdf-tools .pdf-download{display:inline-flex;align-items:center;justify-content:center;align-self:center;padding:8px 12px;border-radius:7px;background:#17243b;color:#fff;text-decoration:none;font-size:11px;font-weight:700}
 .pdf-tools .pdf-download[hidden]{display:none}
 .large-pdf-tools{flex-wrap:wrap}
+
+
+/* Library navigation, catalog controls and account management */
+.grid{grid-template-columns:repeat(var(--book-columns,3),minmax(0,1fr));align-items:start}
+.book{min-width:0}
+.book .cover{min-width:0;overflow:hidden}
+.book .cover strong{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.book .info h3{line-height:1.45}
+.book .info footer{gap:6px;flex-wrap:wrap}
+.book .info footer small{margin-right:auto}
+.book-tags{display:flex;gap:5px;flex-wrap:wrap}
+.book-tags span{font-size:10px;color:#526a71;background:#edf3f2;padding:4px 7px;border-radius:20px}
+.catalog-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:14px;background:#fff;border:1px solid var(--l);border-radius:11px}
+.catalog-controls label{display:grid;gap:6px;min-width:132px;font-size:10px;font-weight:700;color:var(--m)}
+.catalog-controls select{max-width:100%;padding:9px 10px;border:1px solid var(--l);border-radius:7px;background:#fff;color:var(--n);font:inherit;font-size:11px}
+.catalog-controls button{width:auto;min-height:34px;white-space:nowrap}
+.collection-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 25px}
+.collection-tile{display:grid;gap:8px;text-align:left;padding:18px;border:1px solid var(--l);border-radius:11px;background:white;color:var(--n);cursor:pointer}
+.collection-tile b{font:600 17px 'Playfair Display'}
+.collection-tile small,.collection-tile p{font-size:11px;color:var(--m);margin:0}
+.collection-tile:hover{border-color:#aabcb9;background:#fbfdfc}
+.shelf{margin:26px 0 32px}
+.shelf-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.shelf-heading h2,.section-heading{font:600 21px 'Playfair Display';margin:0}
+.shelf-heading p{font-size:11px;color:var(--m);margin:5px 0 0}
+.shelf-heading button{border:0;background:none;color:#426b68;font-weight:700;font-size:11px;cursor:pointer;white-space:nowrap}
+.shelf-row{display:flex;gap:13px;overflow-x:auto;overscroll-behavior-x:contain;padding:2px 2px 12px;scroll-snap-type:x proximity}
+.shelf-row .book{flex:0 0 218px;scroll-snap-align:start}
+.shelf-row .cover{height:145px}
+.shelf-row .cover strong{font-size:18px}
+.book-list{display:flex;flex-direction:column;gap:10px}
+.book-list .book{display:grid;grid-template-columns:150px minmax(0,1fr);min-height:150px}
+.book-list .cover{height:100%;min-height:150px}
+.book-list .cover strong{font-size:19px}
+.book-list .info{display:flex;flex-direction:column;justify-content:center;min-width:0}
+.book-list .info footer{margin-top:auto}
+.account-panel{max-width:720px}
+.account-panel form{display:grid;gap:8px}
+.account-panel label{display:grid;gap:7px;margin:6px 0;font-size:11px;font-weight:700}
+.account-panel input{width:100%;padding:12px;border:1px solid var(--l);border-radius:8px;font:inherit}
+.account-panel label small{font-weight:400;color:var(--m)}
+.account-panel h3{margin:8px 0 0}
+.account-divider{height:1px;background:var(--l);margin:14px 0}
+.account-panel .primary{max-width:250px;margin-top:10px}
+.user-modal{max-width:560px;max-height:92vh;overflow:auto}
+.user-modal form{display:grid;gap:8px}
+.user-modal label{display:grid;gap:7px;font-size:11px;font-weight:700}
+.user-modal input,.user-modal select{width:100%;padding:11px;border:1px solid var(--l);border-radius:8px;font:inherit}
+.user-table{min-width:760px}
+.user-table td{vertical-align:middle}
+.user-table td small{font-size:10px;color:var(--m)}
+.danger{color:#9c3f3f!important;background:#fff1f0!important;border-color:#edd0ce!important}
+.empty-state{background:white;border:1px dashed #cad4d8;border-radius:10px;padding:24px;color:var(--m)}
+.section-heading{margin:25px 0 4px}
+@media(max-width:1150px){.grid{grid-template-columns:repeat(min(var(--book-columns,3),3),minmax(0,1fr))}}
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.catalog-controls{align-items:stretch}.catalog-controls label{flex:1 1 145px}}
+@media(max-width:700px){.grid{grid-template-columns:1fr}.book-list .book{grid-template-columns:105px minmax(0,1fr)}.book-list .cover{min-height:130px}.book-list .cover strong{font-size:15px}.shelf-row .book{flex-basis:195px}.catalog-controls{gap:8px;padding:11px}.catalog-controls label{min-width:calc(50% - 6px)}.catalog-controls button{flex:1}.account-panel .primary{max-width:none}.collection-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.user-table{min-width:720px}}
