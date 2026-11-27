@@ -1075,14 +1075,14 @@ async function imslpLookupPublisherNumber(identifier,contexts=[]){
 function metadataMelosPersonNames(value){
  const generic=/^(?:autores? varios|varios autores|various authors|multiple authors|an[oó]nimos?|unknown)$/i;
  const entries=(Array.isArray(value)?value:[value]).flatMap(item=>
-  String(item||'').split(/[\\/;|\\n]+/).map(part=>part.trim()).filter(Boolean)
+  String(item||'').split(/[\/;|\n]+/).map(part=>part.trim()).filter(Boolean)
  );
  const output=[],seen=new Set();
  for(let entry of entries){
   entry=entry
-   .replace(/\\s+(?:(?:y|e)\\s+otros?|and\\s+others?|et\\s+al\\.?)\\s*$/i,'')
-   .replace(/^[\\s,;|]+|[\\s,;|]+$/g,'')
-   .replace(/\\s+/g,' ')
+   .replace(/\s+(?:(?:y|e)\s+otros?|and\s+others?|et\s+al\.?)\s*$/i,'')
+   .replace(/^[\s,;|]+|[\s,;|]+$/g,'')
+   .replace(/\s+/g,' ')
    .trim();
   if(!entry||generic.test(metadataTextKey(entry))||entry.length>160)continue;
   const key=metadataTextKey(entry);
