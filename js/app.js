@@ -1139,7 +1139,7 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
  for(const identifier of identifiers){
   if(identifier.type==='publisher_number'){
    let candidates=[];
-   if(/^(?:BA|MEL)s*[-.]?s*d{3,8}$/i.test(identifier.value||'')){
+   if(/^(?:BA|MEL)\s*[-.]?\s*\d{3,8}$/i.test(identifier.value||'')){
     try{candidates=await melosLookupPublisherNumber(identifier,trace)}
     catch(error){addTrace('Melos · catálogo oficial',identifier,[],error);console.info('Melos lookup unavailable:',error?.message||error)}
    }
