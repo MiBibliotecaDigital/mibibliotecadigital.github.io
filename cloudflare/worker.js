@@ -871,7 +871,7 @@ async function markCoverFailure(env, documentId, error, previous = {}) {
   }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
 }
 
-async function processMissingCoverThumbnails(env, maxPerRun = 2) {
+async function processMissingCoverThumbnails(env, maxPerRun = 1) {
   if (!env.BIBLIOTECA || !env.BROWSER) {
     console.warn("Cover queue paused: R2 or Browser Run binding unavailable");
     return;
@@ -1714,7 +1714,7 @@ async function lookupMelosProduct(request, env, headers) {
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(processMissingCoverThumbnails(env, 2).catch(error => {
+    ctx.waitUntil(processMissingCoverThumbnails(env, 1).catch(error => {
       console.error("Scheduled cover backfill failed", error);
     }));
   }
