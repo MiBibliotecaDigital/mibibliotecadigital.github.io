@@ -391,7 +391,7 @@ async function reconcileStorage(request, env, headers, auth) {
   const rows = [];
   let offset = 0;
   while (true) {
-    const query = new URLSearchParams({ select: "id,r2_key,size_bytes,file_fingerprint,upload_status,metadata_status,created_at", provider: "eq.r2", order: "created_at.asc", limit: "1000", offset: String(offset) });
+    const query = new URLSearchParams({ select: "id,r2_key,size_bytes,file_fingerprint,upload_status,metadata_status,metadata_reviewed,original_filename,created_at", provider: "eq.r2", order: "created_at.asc", limit: "1000", offset: String(offset) });
     const response = await fetch(base + "/rest/v1/documents?" + query, {
       headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
     });
@@ -416,7 +416,7 @@ async function reconcileStorage(request, env, headers, auth) {
   } while (cursor);
 
   const candidates = objects.filter(object => validUploadKey(object.key));
-  const stats = { scanned: candidates.length, recovered: 0, completed: 0, failed: 0, errors: [] };
+  const stats = { scanned: candidates.length, recovered: 0, completed: 0, filenamesRecovered: 0, filenamesUnavailable: 0, failed: 0, errors: [] };
   let cursorIndex = 0;
   const worker = async () => {
     while (true) {
@@ -427,19 +427,32 @@ async function reconcileStorage(request, env, headers, auth) {
       const existing = byKey.get(object.key);
       try {
         if (existing) {
+          const patchData = {};
+          if (!existing.original_filename && typeof custom.originalFilename === "string" &&
+              custom.originalFilename.trim() && custom.originalFilename.length <= 255) {
+            patchData.original_filename = custom.originalFilename.trim();
+          }
           if (existing.upload_status !== "stored" && Number(existing.size_bytes) === object.size) {
+            patchData.upload_status = "stored";
+            patchData.file_fingerprint = existing.file_fingerprint || custom.fileFingerprint || null;
+            patchData.metadata_status = "pending";
+            patchData.metadata_error = null;
+          }
+          if (Object.keys(patchData).length) {
             const patch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(existing.id), {
               method: "PATCH",
               headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json", Prefer: "return=representation" },
-              body: JSON.stringify({
-                upload_status: "stored",
-                file_fingerprint: existing.file_fingerprint || custom.fileFingerprint || null,
-                metadata_status: "pending",
-                metadata_error: null
-              })
+              body: JSON.stringify(patchData)
             });
-            if (patch.ok) stats.completed++;
-            else { stats.failed++; stats.errors.push(object.key + ": catalogue status update failed"); }
+            if (!patch.ok) {
+              stats.failed++;
+              if (stats.errors.length < 10) stats.errors.push(object.key + ": catalogue metadata update failed");
+            } else {
+              if (patchData.upload_status === "stored") stats.completed++;
+              if (patchData.original_filename) stats.filenamesRecovered++;
+            }
+          } else if (!existing.original_filename) {
+            stats.filenamesUnavailable++;
           }
           continue;
         }
@@ -463,7 +476,7 @@ async function reconcileStorage(request, env, headers, auth) {
           metadata_status: "pending",
           metadata_error: null,
           upload_status: "stored",
-          original_filename: custom.originalFilename || object.key.split("/").pop(),
+          original_filename: custom.originalFilename || null,
           uploaded_by: UUID_RE.test(auth.user.id) ? auth.user.id : null
         };
         const insert = await fetch(base + "/rest/v1/documents", {
@@ -474,6 +487,8 @@ async function reconcileStorage(request, env, headers, auth) {
         if (insert.ok) {
           byKey.set(object.key, restored);
           stats.recovered++;
+          if (restored.original_filename) stats.filenamesRecovered++;
+          else stats.filenamesUnavailable++;
         } else {
           const error = await insert.text();
           stats.failed++;
