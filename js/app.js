@@ -1,6 +1,6 @@
 import{createClient}from'https://esm.sh/@supabase/supabase-js@2';
 const c=window.BIBLIOTECA_CONFIG||{},live=!!(c.supabaseUrl&&c.supabaseAnonKey&&c.demoMode===false),db=live?createClient(c.supabaseUrl,c.supabaseAnonKey):null,root=document.querySelector('#app');
-let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='';
+let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all';
 const sample=[['d1','Atlas del Archipielago Luminario','Elena Mar de Papel','Geografia imaginaria','atlas-luminario.pdf','sea'],['d2','Herbario de Arrecife Azul','Tomas del Invernadero','Naturaleza','herbario-arrecife-azul.pdf','leaf'],['d3','Cuaderno musical de Ciudad Resonante','Mara Afinacion','Musica','cuaderno-musica-ciudad.pdf','amber']].map(x=>({id:x[0],title:x[1],author:x[2],category:x[3],year:2026,pages:1,size:'PDF de muestra',provider:'demo',path:'/demo/pdfs/'+x[4],tone:x[5]}));
 const demoUsers=[{name:'Administracion de prueba',email:'admin@biblioteca.local',role:'admin',status:'Activo'},{name:'Lector de ejemplo',email:'demo@biblioteca.local',role:'reader',status:'Activo'}];
 const esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),label=r=>r==='admin'?'Administrador':r==='editor'?'Editor':'Lector';
@@ -19,7 +19,7 @@ async function loadUser(u){let {data:p,error}=await db.from('profiles').select('
 function nav(p,t){return '<button class="nav '+(page===p?'active':'')+'" data-page="'+p+'">'+t+'</button>'}
 function card(b){return '<article class="book '+(viewMode==='list'?'book-list-item':'')+'"><div class="cover '+b.tone+'"><small>PDF</small><strong>'+esc(b.title)+'</strong><span>'+esc(b.author||'Autor no indicado')+'</span></div><div class="info"><em>'+esc(b.category)+'</em><h3>'+esc(b.title)+'</h3><p>'+esc(b.author||'Autor no indicado')+' · '+esc(b.year||'Año sin indicar')+(b.pages&&b.pages!=='—'?' · '+esc(b.pages)+' págs.':'')+'</p><p class="book-tags">'+(b.tags||[]).map(t=>'<span>'+esc(t)+'</span>').join('')+'</p><footer><button class="fav" data-fav="'+esc(b.id)+'">'+(favs.has(b.id)?'♥':'♡')+'</button><small>'+esc(b.size)+'</small><button data-open="'+esc(b.id)+'">Abrir PDF</button>'+(role==='admin'?'<button class="small-action" data-edit-book="'+esc(b.id)+'">Editar</button><button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button>':'')+'</footer></div></article>'}
 function filtered(){let out=books.filter(b=>(page!=='favorites'||favs.has(b.id))&&(!query||(b.title+' '+b.author+' '+b.category+' '+(b.tags||[]).join(' ')).toLowerCase().includes(query.toLowerCase()))&&(!filterCollection||b.collectionId===filterCollection)&&(!filterCategory||b.category===filterCategory||(b.tags||[]).includes(filterCategory)));out.sort((a,b)=>{if(sortBy==='title'){const c=(a.title||'').localeCompare(b.title||'','es',{sensitivity:'base'});return sortDir==='asc'?c:-c}const av=sortBy==='year'?Number(a.year):Number(a.pageCount),bv=sortBy==='year'?Number(b.year):Number(b.pageCount),am=!Number.isFinite(av)||av<=0,bm=!Number.isFinite(bv)||bv<=0;if(am!==bm)return am?1:-1;const c=av-bv;return sortDir==='asc'?c:-c});return out}
-function uploadPage(){return '<div class="heading"><div><h1>Subida múltiple</h1><p>Seleccioná varios PDFs. Se guardarán como borradores privados. Después se analizarán automáticamente para proponer los metadatos.</p></div></div><form class="panel upload-panel" id="upload-form"><label class="upload-drop" id="upload-drop" for="upload-files"><strong>Elegí o arrastrá varios archivos PDF</strong><span>Podés seleccionar hasta 20 archivos por tanda · 2 GiB por archivo</span><input id="upload-files" name="files" type="file" accept=".pdf,application/pdf" multiple required></label><div id="upload-file-list" class="upload-file-list"><span class="muted">Todavía no seleccionaste archivos.</span></div><div class="upload-note">Los archivos no se publican al terminar la subida. Primero quedan en R2 como borradores privados; luego se analizan sus propiedades internas y el texto de las primeras páginas. Revisá y corregí título, autores, año, ISBN, temas y colección desde Metadatos antes de publicar.</div><button class="primary" id="upload-submit" type="submit" disabled>Subir PDFs seleccionados</button><div id="upload-results" class="upload-results" aria-live="polite"></div></form>'}
+function uploadPage(){return '<div class="heading"><div><h1>Subir PDFs</h1><p>Seleccioná varios archivos. Se guardan como borradores privados y se analizan automáticamente.</p></div></div><form class="panel upload-panel" id="upload-form"><label class="upload-drop" id="upload-drop" for="upload-files"><strong>Elegí o arrastrá varios archivos PDF</strong><span>Hasta 20 archivos por tanda · 2 GiB por archivo</span><input id="upload-files" name="files" type="file" accept=".pdf,application/pdf" multiple required></label><div id="upload-file-list" class="upload-file-list"><span class="muted">Todavía no seleccionaste archivos.</span></div><div class="upload-note">Al terminar, se extraen automáticamente propiedades y texto del PDF. Cuando se detecta un ISBN, se consultan catálogos bibliográficos externos para completar título, autores, editorial, año, temas y descripción. Cada ficha queda como borrador privado para que puedas revisarla en Administrar libros. Los archivos escaneados sin texto pueden necesitar corrección manual.</div><div class="upload-note">La detección de duplicados compara huellas exactas con documentos de esta biblioteca y coincidencias bibliográficas por ISBN o título/autor. No rastrea todos los sitios de Internet.</div><button class="primary" id="upload-submit" type="submit" disabled>Subir PDFs seleccionados</button><div id="upload-results" class="upload-results" aria-live="polite"></div></form>'}
 function renderUploadSelection(){
   const list=document.querySelector('#upload-file-list'),button=document.querySelector('#upload-submit');
   if(!list||!button)return;
@@ -29,7 +29,37 @@ function renderUploadSelection(){
   button.textContent=selectedFiles.length?'Subir '+selectedFiles.length+' PDF(s)':'Subir PDFs seleccionados';
   if(selectedFiles.length>20)list.insertAdjacentHTML('beforeend','<p class="upload-error">El máximo por tanda es de 20 archivos.</p>');
 }
-async function uploadOneFile(file,token,onProgress){
+async function fingerprintFile(file,onProgress){
+  const chunkSize=16*1024*1024,parts=[];
+  for(let offset=0;offset<file.size;offset+=chunkSize){
+    const bytes=await file.slice(offset,Math.min(offset+chunkSize,file.size)).arrayBuffer();
+    const digest=await crypto.subtle.digest('SHA-256',bytes);
+    parts.push(Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join(''));
+    onProgress?.(Math.round(Math.min(offset+chunkSize,file.size)/file.size*100));
+  }
+  const canonical='MiBibliotecaDigital:file-fingerprint:v1:'+file.size+':'+chunkSize+':'+parts.join('');
+  const finalDigest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(finalDigest),b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function findExactDuplicates(fingerprint){
+  const {data,error}=await db.from('documents').select('id,title,authors,isbn,is_published,file_fingerprint')
+    .eq('file_fingerprint',fingerprint).limit(10);
+  if(error)throw error;
+  return data||[];
+}
+function askDuplicateChoice(file,matches){
+  return new Promise(resolve=>{
+    const modal=document.createElement('div');modal.className='modal-bg';
+    modal.innerHTML='<section class="modal duplicate-modal"><header><b>PDF posiblemente duplicado</b><button id="duplicate-close" type="button">Cerrar ×</button></header><p>Ya existe '+(matches.length===1?'un documento':'documentos')+' con exactamente los mismos bytes que <b>'+esc(file.name)+'</b>:</p><ul>'+matches.map(x=>'<li>'+esc(x.title||'Sin título')+'</li>').join('')+'</ul><p class="muted">Puede ser una copia accidental o una versión que querés conservar por separado.</p><div class="metadata-actions"><button class="secondary" id="duplicate-skip" type="button">Omitir este PDF</button><button class="primary" id="duplicate-continue" type="button">Subir igualmente como libro diferente</button></div></section>';
+    document.body.append(modal);
+    const finish=value=>{modal.remove();resolve(value)};
+    modal.querySelector('#duplicate-close').onclick=()=>finish(false);
+    modal.querySelector('#duplicate-skip').onclick=()=>finish(false);
+    modal.querySelector('#duplicate-continue').onclick=()=>finish(true);
+    modal.onclick=e=>{if(e.target===modal)finish(false)};
+  });
+}
+async function uploadOneFile(file,token,onProgress,fileFingerprint){
   const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
   const auth={Authorization:'Bearer '+token};
   let upload=null;
@@ -49,7 +79,7 @@ async function uploadOneFile(file,token,onProgress){
       onProgress?.(Math.round(offset/file.size*100));
     }
     const fileName=file.name.slice(0,255);
-    const complete=await fetch(base+'/upload/complete',{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({key:upload.key,uploadId:upload.uploadId,parts,fileSize:file.size,fileName})});
+    const complete=await fetch(base+'/upload/complete',{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({key:upload.key,uploadId:upload.uploadId,parts,fileSize:file.size,fileName,fileFingerprint})});
     if(!complete.ok)throw new Error((await complete.text())||'No se pudo finalizar la carga.');
     const result=await complete.json();upload=null;
     return result.document;
@@ -69,21 +99,87 @@ async function uploadMultiple(e){
   const form=e.currentTarget,button=form.querySelector('#upload-submit'),results=form.querySelector('#upload-results');
   button.disabled=true;
   results.innerHTML=files.map((f,i)=>'<div class="upload-result" data-upload-row="'+i+'"><div><strong>'+esc(f.name)+'</strong><span class="upload-result-status">En cola</span></div><progress max="100" value="0"></progress></div>').join('');
-  let success=0,failed=0;
+  let success=0,failed=0,skipped=0;
   for(let i=0;i<files.length;i++){
     const row=results.querySelector('[data-upload-row="'+i+'"]'),status=row.querySelector('.upload-result-status'),progress=row.querySelector('progress');
-    status.textContent='Preparando...';
+    let fileFingerprint=null;
     try{
-      const document=await uploadOneFile(files[i],session.access_token,p=>{progress.value=p;status.textContent='Subiendo · '+p+'%'});
-      progress.value=100;status.textContent='PDF guardado · analizando metadatos…';row.classList.add('upload-result-success');try{await analyzeStoredDocument(document.id,false,session.access_token);status.textContent='Subido · ficha propuesta automáticamente';}catch(metaError){console.warn('PDF metadata analysis skipped',metaError);status.textContent='Subido · ficha pendiente de revisión';}success++;
+      status.textContent='Calculando huella digital…';
+      fileFingerprint=await fingerprintFile(files[i],p=>{progress.value=p;status.textContent='Verificando duplicados · '+p+'%'});
+      const duplicates=await findExactDuplicates(fileFingerprint);
+      if(duplicates.length){
+        progress.value=0;status.textContent='Coincidencia exacta encontrada';
+        const continueUpload=await askDuplicateChoice(files[i],duplicates);
+        if(!continueUpload){status.textContent='Duplicado omitido';row.classList.add('upload-result-skipped');skipped++;continue}
+      }
+      status.textContent='Subiendo…';progress.value=0;
+      const document=await uploadOneFile(files[i],session.access_token,p=>{progress.value=p;status.textContent='Subiendo · '+p+'%'},fileFingerprint);
+      progress.value=100;status.textContent='PDF guardado · analizando PDF e ISBN…';row.classList.add('upload-result-success');
+     function normalizedBookText(value){
+  return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+}
+function bookDuplicateMatch(book,all){
+  const isbn=String(book.isbn||'').replace(/[^0-9Xx]/g,'').toUpperCase();
+  const title=normalizedBookText(book.title);
+  const authors=(book.authors||[]).map(normalizedBookText).filter(Boolean);
+  return all.find(other=>{
+    if(other.id===book.id)return false;
+    const otherIsbn=String(other.isbn||'').replace(/[^0-9Xx]/g,'').toUpperCase();
+    if(isbn&&otherIsbn&&isbn===otherIsbn)return true;
+    const otherTitle=normalizedBookText(other.title);
+    if(!title||title.length<8||title!==otherTitle)return false;
+    const otherAuthors=(other.authors||[]).map(normalizedBookText).filter(Boolean);
+    return !authors.length||!otherAuthors.length||authors.some(a=>otherAuthors.includes(a));
+  })||null;
+}
+function bookManagementRows(search='',status='all'){
+  const all=[...books,...pendingDocs],q=normalizedBookText(search);
+  const rows=all.filter(b=>{
+    const published=books.some(x=>x.id===b.id);
+    if(status==='published'&&!published)return false;
+    if(status==='draft'&&published)return false;
+    const hay=normalizedBookText([b.title,(b.authors||[]).join(' '),b.isbn,b.publisher,b.category,(b.tags||[]).join(' '),b.description].join(' '));
+    return !q||hay.includes(q);
+  });
+  if(!rows.length)return '<tr><td colspan="6" class="empty-state">No hay libros que coincidan con este filtro.</td></tr>';
+  return rows.map(b=>{
+    const published=books.some(x=>x.id===b.id),collection=collections.find(x=>x.id===b.collectionId);
+    const duplicate=bookDuplicateMatch(b,all);
+    return '<tr><td><b>'+esc(b.title)+'</b><small>'+esc((b.authors||[]).join(', ')||'Autor sin identificar')+'</small>'+(duplicate?'<span class="duplicate-warning">Posible duplicado de: '+esc(duplicate.title)+'</span>':'')+'</td><td>'+esc(b.isbn||'—')+'</td><td>'+esc(collection?.name||'Sin colección')+'</td><td>'+(published?'<span class="pending-tag published-tag">Publicado</span>':'<span class="pending-tag">Borrador privado</span>')+'</td><td>'+esc(b.category||'General')+'</td><td><button class="small-action" data-edit-doc="'+esc(b.id)+'">Editar ficha</button><button class="small-action" data-open="'+esc(b.id)+'">Vista previa</button><button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button></td></tr>';
+  }).join('');
+}
+function booksPage(){
+  const all=[...books,...pendingDocs];
+  return '<div class="heading"><div><h1>Administrar libros</h1><p>Revisá fichas publicadas y borradores. Podés corregir metadatos, cambiar de colección, publicar, retirar o eliminar.</p></div><span class="tag">'+all.length+' documentos</span></div><div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="panel"><table class="pending-table books-admin-table"><thead><tr><th>Libro / Autores</th><th>ISBN</th><th>Colección</th><th>Estado</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
+}
+function bindBookManagement(){
+  const search=document.querySelector('#book-admin-search'),status=document.querySelector('#book-admin-status'),body=document.querySelector('#book-admin-rows');
+  const refresh=()=>{if(body)body.innerHTML=bookManagementRows(search?.value||'',status?.value||'all')};
+  search?.addEventListener('input',refresh);status?.addEventListener('change',refresh);
+  body?.addEventListener('click',e=>{
+    const button=e.target.closest('button');if(!button)return;
+    if(button.dataset.editDoc)editDocumentMetadata(button.dataset.editDoc);
+    else if(button.dataset.deleteBook)deleteDocument(button.dataset.deleteBook);
+    else if(button.dataset.open)openBook(button.dataset.open);
+  });
+}
+ try{
+        const metadata=await analyzeStoredDocument(document.id,false,session.access_token);
+        status.textContent=metadata?.isbnLookup?'Subido · ficha enriquecida desde ISBN':'Subido · ficha analizada automáticamente';
+      }catch(metaError){
+        console.warn('PDF metadata analysis skipped',metaError);
+        status.textContent='Subido · análisis parcial; ficha editable';
+      }
+      success++;
     }catch(error){
-      status.textContent='Error · '+(error?.message||'No se pudo subir');row.classList.add('upload-result-error');failed++;
+      status.textContent='Error · '+(error?.message||'No se pudo subir');
+      row.classList.add('upload-result-error');failed++;
     }
   }
   selectedFiles=[];form.reset();renderUploadSelection();
-  if(success){page='pending';query='';await loadUser(me)}
+  if(success){page='books';query='';await loadUser(me)}
   button.disabled=false;
-  toast(success+' PDF(s) subidos'+(failed?' · '+failed+' error(es)':'')+'.');
+  toast(success+' PDF(s) subidos'+(skipped?' · '+skipped+' duplicado(s) omitido(s)':'')+(failed?' · '+failed+' error(es)':'')+'.');
 }
 function pendingPage(){
   return '<div class="heading"><div><h1>Metadatos pendientes</h1><p>Los documentos de esta lista están guardados en privado y todavía no aparecen para los lectores.</p></div><span class="tag">'+pendingDocs.length+' pendientes</span></div><div class="notice metadata-help"><b>La ficha se analiza automáticamente</b><span>Se leen las propiedades internas del PDF y el texto de las primeras cinco páginas para proponer título, autores, año, ISBN, editorial, temas y cantidad de páginas. Son sugerencias: revisalas antes de publicar. Los PDFs escaneados sin capa de texto pueden necesitar OCR adicional.</span></div>'+(pendingDocs.length?'<div class="panel"><table class="pending-table"><tr><th>Documento (nombre provisional)</th><th>Tamaño</th><th>Estado</th><th></th></tr>'+pendingDocs.map(d=>'<tr><td>'+esc(d.title)+'</td><td>'+esc(d.size)+'</td><td><span class="pending-tag">Privado</span></td><td><button class="small-action" data-analyze-doc="'+esc(d.id)+'">Analizar PDF</button><button class="small-action" data-edit-doc="'+esc(d.id)+'">Editar ficha</button><button class="small-action" data-open="'+esc(d.id)+'">Vista previa</button><button class="small-action danger" data-delete-book="'+esc(d.id)+'">Eliminar</button></td></tr>').join('')+'</table>':'<div class="panel empty-state">No hay fichas pendientes. Cuando subas PDFs, aparecerán aquí.')+'</div>';
@@ -106,8 +202,8 @@ function collectionModal(existing=null){const m=document.createElement('div');m.
 function addCollection(){if(role==='admin')collectionModal()}
 function editCollection(id){const c=collections.find(x=>x.id===id);if(c&&role==='admin')collectionModal(c)}
 async function deleteCollection(id){const c=collections.find(x=>x.id===id);if(!c||role!=='admin')return;const count=books.filter(b=>b.collectionId===id).length+pendingDocs.filter(b=>b.collectionId===id).length;if(!confirm('¿Eliminar la colección "'+c.name+'"'+(count?' y quitarla de '+count+' fichas':'')+'? Los libros y sus PDFs no se borrarán.'))return;const {error:moveError}=await db.from('documents').update({collection_id:null}).eq('collection_id',id);if(moveError)return toast('No se pudieron liberar los libros: '+moveError.message);const {error}=await db.from('collections').delete().eq('id',id);if(error)return toast('No se pudo eliminar: '+error.message);toast('Colección eliminada; los libros se conservaron.');await loadUser(me)}
-function content(){if(page==='account')return accountPage();if(page==='upload'&&role==='admin')return uploadPage();if(page==='pending'&&role==='admin')return pendingPage();if(page==='users'&&role==='admin')return usersPage();if(page==='settings'&&role==='admin')return '<div class="heading"><h1>Configuración</h1></div><div class="panel"><h2>Almacenamiento privado</h2><p>Bucket R2 privado conectado. Los PDFs se entregan por pasarela autenticada.</p><h2>Metadatos</h2><p>Los nuevos PDFs se analizan al subirlos; las sugerencias deben revisarse antes de publicar.</p></div>';if(page==='collections')return collectionsPage();let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':'Tu biblioteca',controls=page==='catalog'||page==='favorites'?catalogControls():'';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu biblioteca organizada en un solo lugar.</p></div><span class="tag">'+list.length+' libros</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>'+collections.length+'</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div><h2 class="section-heading">Tus colecciones</h2>'+collectionShelves():'')+controls+(page==='catalog'||page==='favorites'?'<div class="chips">'+[...new Set(books.map(x=>x.category).filter(Boolean))].sort().map(x=>'<button data-cat="'+esc(x)+'">'+esc(x)+'</button>').join('')+'<button data-clear-filters="1">Limpiar filtros</button></div>':'')+'<div class="'+(viewMode==='list'?'book-list':'grid')+'" style="--book-columns:'+density+'">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'PDF ficticios de demostración.')+'</p>'}
-function render(){window.__BIBLIOTECA_READY__=true;root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACIÓN · sin autenticación real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Inicio')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+nav('account','♙ Mi cuenta')+(role==='admin'?'<small>ADMINISTRACIÓN</small>'+nav('users','♟ Usuarios')+nav('upload','＋ Subir PDFs')+nav('pending','✎ Metadatos ('+pendingDocs.length+')')+nav('settings','⚙ Configuración'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesión</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar título, autor o tema..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#search').oninput=e=>{query=e.target.value;const g=document.querySelector('.grid,.book-list');if(g)g.innerHTML=filtered().map(card).join('');bindBooks()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';filterCategory=x.dataset.cat;filterCollection='';render()});document.querySelector('#add')?.addEventListener('click',addUser);document.querySelector('#account-form')?.addEventListener('submit',saveAccount);document.querySelector('#sort-by')?.addEventListener('change',e=>{sortBy=e.target.value;render()});document.querySelector('#sort-dir')?.addEventListener('click',()=>{sortDir=sortDir==='asc'?'desc':'asc';render()});document.querySelector('#view-mode')?.addEventListener('change',e=>{viewMode=e.target.value;render()});document.querySelector('#density')?.addEventListener('change',e=>{density=Number(e.target.value);render()});document.querySelector('#filter-collection')?.addEventListener('change',e=>{filterCollection=e.target.value;render()});document.querySelector('#filter-category')?.addEventListener('change',e=>{filterCategory=e.target.value;render()});document.querySelectorAll('[data-collection]').forEach(x=>x.onclick=()=>{page='catalog';filterCollection=x.dataset.collection;render()});document.querySelector('#add-collection')?.addEventListener('click',addCollection);document.querySelectorAll('[data-edit-collection]').forEach(x=>x.onclick=()=>editCollection(x.dataset.editCollection));document.querySelectorAll('[data-delete-collection]').forEach(x=>x.onclick=()=>deleteCollection(x.dataset.deleteCollection));document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>{filterCollection='';filterCategory='';query='';render()});document.querySelector('#upload-form')?.addEventListener('submit',uploadMultiple);document.querySelector('#upload-files')?.addEventListener('change',e=>{selectedFiles=Array.from(e.target.files||[]);renderUploadSelection()});const drop=document.querySelector('#upload-drop');drop?.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop?.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop?.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');selectedFiles=Array.from(e.dataTransfer?.files||[]);renderUploadSelection()});document.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));document.querySelectorAll('[data-edit-book]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editBook));document.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));document.querySelectorAll('[data-analyze-doc]').forEach(x=>x.onclick=async()=>{try{await analyzeStoredDocument(x.dataset.analyzeDoc,true);await loadUser(me)}catch(e){toast('No se pudo analizar: '+e.message)}});document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUser(x.dataset.editUser));document.querySelectorAll('[data-delete-user]').forEach(x=>x.onclick=()=>deleteUser(x.dataset.deleteUser));bindBooks()}
+function content(){if(page==='account')return accountPage();if(page==='upload'&&role==='admin')return uploadPage();if((page==='books'||page==='pending')&&role==='admin')return booksPage();if(page==='users'&&role==='admin')return usersPage();if(page==='settings'&&role==='admin')return '<div class="heading"><h1>Configuración</h1></div><div class="panel"><h2>Almacenamiento privado</h2><p>Bucket R2 privado conectado. Los PDFs se entregan por pasarela autenticada.</p><h2>Metadatos</h2><p>Los nuevos PDFs se analizan al subirlos; las sugerencias deben revisarse antes de publicar.</p></div>';if(page==='collections')return collectionsPage();let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':'Tu biblioteca',controls=page==='catalog'||page==='favorites'?catalogControls():'';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu biblioteca organizada en un solo lugar.</p></div><span class="tag">'+list.length+' libros</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>'+collections.length+'</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div><h2 class="section-heading">Tus colecciones</h2>'+collectionShelves():'')+controls+(page==='catalog'||page==='favorites'?'<div class="chips">'+[...new Set(books.map(x=>x.category).filter(Boolean))].sort().map(x=>'<button data-cat="'+esc(x)+'">'+esc(x)+'</button>').join('')+'<button data-clear-filters="1">Limpiar filtros</button></div>':'')+'<div class="'+(viewMode==='list'?'book-list':'grid')+'" style="--book-columns:'+density+'">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'PDF ficticios de demostración.')+'</p>'}
+function render(){window.__BIBLIOTECA_READY__=true;root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACIÓN · sin autenticación real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Inicio')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+nav('account','♙ Mi cuenta')+(role==='admin'?'<small>ADMINISTRACIÓN</small>'+nav('users','♟ Usuarios')+nav('books','▤ Administrar libros')+nav('upload','＋ Subir PDFs')+nav('settings','⚙ Configuración'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesión</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar título, autor o tema..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#search').oninput=e=>{query=e.target.value;const g=document.querySelector('.grid,.book-list');if(g)g.innerHTML=filtered().map(card).join('');bindBooks();if(page==='books'||page==='pending')bindBookManagement()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';filterCategory=x.dataset.cat;filterCollection='';render()});document.querySelector('#add')?.addEventListener('click',addUser);document.querySelector('#account-form')?.addEventListener('submit',saveAccount);document.querySelector('#sort-by')?.addEventListener('change',e=>{sortBy=e.target.value;render()});document.querySelector('#sort-dir')?.addEventListener('click',()=>{sortDir=sortDir==='asc'?'desc':'asc';render()});document.querySelector('#view-mode')?.addEventListener('change',e=>{viewMode=e.target.value;render()});document.querySelector('#density')?.addEventListener('change',e=>{density=Number(e.target.value);render()});document.querySelector('#filter-collection')?.addEventListener('change',e=>{filterCollection=e.target.value;render()});document.querySelector('#filter-category')?.addEventListener('change',e=>{filterCategory=e.target.value;render()});document.querySelectorAll('[data-collection]').forEach(x=>x.onclick=()=>{page='catalog';filterCollection=x.dataset.collection;render()});document.querySelector('#add-collection')?.addEventListener('click',addCollection);document.querySelectorAll('[data-edit-collection]').forEach(x=>x.onclick=()=>editCollection(x.dataset.editCollection));document.querySelectorAll('[data-delete-collection]').forEach(x=>x.onclick=()=>deleteCollection(x.dataset.deleteCollection));document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>{filterCollection='';filterCategory='';query='';render()});document.querySelector('#upload-form')?.addEventListener('submit',uploadMultiple);document.querySelector('#upload-files')?.addEventListener('change',e=>{selectedFiles=Array.from(e.target.files||[]);renderUploadSelection()});const drop=document.querySelector('#upload-drop');drop?.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop?.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop?.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');selectedFiles=Array.from(e.dataTransfer?.files||[]);renderUploadSelection()});document.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));document.querySelectorAll('[data-edit-book]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editBook));document.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));document.querySelectorAll('[data-analyze-doc]').forEach(x=>x.onclick=async()=>{try{await analyzeStoredDocument(x.dataset.analyzeDoc,true);await loadUser(me)}catch(e){toast('No se pudo analizar: '+e.message)}});document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUser(x.dataset.editUser));document.querySelectorAll('[data-delete-user]').forEach(x=>x.onclick=()=>deleteUser(x.dataset.deleteUser));bindBooks()}
 function bindBooks(){document.querySelectorAll('[data-open]').forEach(x=>x.onclick=()=>openBook(x.dataset.open));document.querySelectorAll('[data-fav]').forEach(x=>x.onclick=()=>{favs.has(x.dataset.fav)?favs.delete(x.dataset.fav):favs.add(x.dataset.fav);render()})}
 async function openBook(id){
   const b=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!b)return;
@@ -212,9 +308,119 @@ function addUser(){const m=document.createElement('div');m.className='modal-bg';
 function editUser(id){const u=users.find(x=>x.id===id);if(!u)return;const m=document.createElement('div');m.className='modal-bg';m.innerHTML='<section class="modal user-modal"><header><b>Editar usuario</b><button id="close" type="button">Cerrar</button></header><form id="edit"><label>Nombre visible<input name="fullName" maxlength="120" value="'+esc(u.name)+'" required></label><label>Username<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" value="'+esc(u.username||'')+'"></label><label>Rol<select name="role"><option value="reader" '+(u.role==='reader'?'selected':'')+'>Lector</option><option value="editor" '+(u.role==='editor'?'selected':'')+'>Editor</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrador</option></select></label><label>Estado<select name="status"><option value="active" '+(u.status==='active'?'selected':'')+'>Activo</option><option value="suspended" '+(u.status==='suspended'?'selected':'')+'>Suspendido</option></select></label><p class="muted">Correo: '+esc(u.email)+' · el usuario puede cambiarlo desde Mi cuenta.</p><button class="primary">Guardar cambios</button></form></section>';document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.querySelector('#edit').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.currentTarget));try{await adminUsersAction({action:'update',userId:id,...body});toast('Usuario actualizado.');m.remove();await loadUser(me)}catch(error){toast('No se pudo actualizar: '+error.message)}}}
 async function deleteUser(id){const u=users.find(x=>x.id===id);if(!u||id===me.id)return;if(!confirm('¿Eliminar la cuenta de '+(u.name||u.email)+'? Esta acción no se puede deshacer.'))return;try{await adminUsersAction({action:'delete',userId:id});toast('Usuario eliminado.');await loadUser(me)}catch(error){toast('No se pudo eliminar: '+error.message)}}
 async function deleteDocument(id){const d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!d||role!=='admin')return;if(!confirm('¿Eliminar definitivamente "'+d.title+'" y su PDF privado? Esta acción no se puede deshacer.'))return;const {data:{session}}=await db.auth.getSession();if(!session?.access_token)return login('Tu sesión expiró.');const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');try{const response=await fetch(base+'/document/'+encodeURIComponent(id),{method:'DELETE',headers:{Authorization:'Bearer '+session.access_token}});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'No se pudo eliminar.');toast(result.storageCleanupPending?'Registro eliminado; el almacenamiento requiere limpieza manual.':'Documento y archivo eliminados.');await loadUser(me)}catch(error){toast('Error al eliminar: '+error.message)}}
-async function analyzeStoredDocument(id,showToast=true,tokenOverride=null){let d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!d){const {data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed').eq('id',id).single();if(error||!row)throw error||new Error('Documento no encontrado.');d={id:row.id,title:row.title,authors:row.authors||[],year:row.publication_year||'',category:row.category||'General',pageCount:row.page_count||0,provider:row.provider,description:row.description||'',tags:row.tags||[],isbn:row.isbn||'',publisher:row.publisher||'',metadataSource:row.metadata_source||'filename',metadataReviewed:!!row.metadata_reviewed}}if(d.provider!=='r2')return;const {data:{session}}=await db.auth.getSession();const token=tokenOverride||session?.access_token;if(!token)throw new Error('Sesión vencida.');const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);const task=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});let pdf;try{pdf=await task.promise;const meta=await pdf.getMetadata(),info=meta?.info||{};let text='';for(let n=1;n<=Math.min(pdf.numPages,5);n++){const p=await pdf.getPage(n),tc=await p.getTextContent();text+=tc.items.map(x=>(x.str||'')+(x.hasEOL?'\n':' ')).join('')}const normalized=[text,info.Subject||'',info.Keywords||''].join('\n').replace(/[\t\u00a0]+/g,' ').replace(/ {2,}/g,' ').replace(/\r/g,'\n');const lines=normalized.split('\n').flatMap(l=>l.split(/ {3,}/)).map(x=>x.trim()).filter(x=>x.length>3);const candidates=lines.filter(x=>x.length>=6&&x.length<=140&&!/^(isbn|issn|copyright|derechos|www\.|https?:|editorial|ediciones|impreso|printed|autor(?:es)?|índice|indice|contenido|contents)/i.test(x));const infoTitle=String(info.Title||'').trim(),title=infoTitle.length>=4&&infoTitle.length<=300?infoTitle:(candidates[0]||'');const infoAuthor=String(info.Author||'').trim(),authorMatch=normalized.match(/(?:autor(?:es)?|compositor(?:es)?|escrito por|by)\s*[:\-]\s*([^\n]{3,100})/i),authors=infoAuthor?infoAuthor.split(/[;,]/).map(x=>x.trim()).filter(Boolean):authorMatch?[authorMatch[1].trim()]:[];const isbnMatch=normalized.match(/ISBN(?:-1[03])?\s*[:\-]?\s*((?:97[89][\s-]?)?[0-9Xx][0-9Xx\s-]{8,20}[0-9Xx])/i),isbn=isbnMatch?isbnMatch[1].replace(/[\s-]/g,''):null;const yearMatch=normalized.match(/(?:©|copyright|derechos reservados|edici[oó]n|impreso|publicado|printed|publication)\D{0,45}((?:19|20)\d{2})/i),year=yearMatch?Number(yearMatch[1]):null;const pubMatch=normalized.match(/(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*([^\n]{3,90})/i),publisher=pubMatch?pubMatch[1].trim().slice(0,200):null;const lower=normalized.toLowerCase(),taxonomy=[['guitarra',['guitarra','guitar','tablatura','fretboard']],['piano',['piano','teclado','keyboard']],['armonía',['armonía','armonia','harmony','acordes']],['teoría musical',['teoría musical','teoria musical','escalas','modos griegos','contrapunto']],['partituras',['partitura','score','pentagrama','notación musical','notacion musical']],['canto y voz',['canto','voz','vocal','coral','coro']],['jazz',['jazz','bebop','swing','blues']]],tags=taxonomy.filter(([_,terms])=>terms.some(t=>lower.includes(t))).map(([tag])=>tag);let category=d.category;if(tags.includes('guitarra'))category='Partituras para guitarra';else if(tags.includes('piano'))category='Música para piano';else if(tags.includes('canto y voz'))category='Música coral';else if(tags.length)category=tags[0].charAt(0).toUpperCase()+tags[0].slice(1);const updates={page_count:pdf.numPages,metadata_source:(title||authors.length||isbn||year||tags.length)?'pdf_text':'filename',metadata_reviewed:false};if((d.metadataSource==='filename'||!d.metadataSource)&&title)updates.title=title;if(!d.authors?.length&&authors.length)updates.authors=authors;if(!d.year&&year)updates.publication_year=year;if(!d.isbn&&isbn&&[10,13].includes(isbn.length))updates.isbn=isbn;if(!d.publisher&&publisher)updates.publisher=publisher;if((!d.category||d.category==='General')&&tags.length)updates.category=category;const embeddedTags=String(info.Keywords||'').split(/[,;|]/).map(x=>x.trim()).filter(x=>x.length>1&&x.length<50);if(!d.tags?.length&&(tags.length||embeddedTags.length))updates.tags=[...new Set([...embeddedTags,...tags])].slice(0,30);if(!d.description&&info.Subject)updates.description=String(info.Subject).slice(0,3000);const {error}=await db.from('documents').update(updates).eq('id',id);if(error)throw error;if(showToast)toast('Análisis completado: '+pdf.numPages+' páginas · propuesta pendiente de revisión.');return updates}finally{try{await task.destroy()}catch{}}}
+async function lookupIsbnMetadata(isbn){
+  const clean=String(isbn||'').replace(/[^0-9Xx]/g,'').toUpperCase();
+  if(![10,13].includes(clean.length))return null;
+  const timeout=()=>AbortSignal.timeout(8000);
+  try{
+    const url='https://www.googleapis.com/books/v1/volumes?q='+encodeURIComponent('isbn:'+clean)+'&maxResults=5';
+    const response=await fetch(url,{signal:timeout()});
+    if(response.ok){
+      const data=await response.json();
+      const candidates=(data.items||[]).map(x=>x.volumeInfo||{}).filter(v=>{
+        const ids=(v.industryIdentifiers||[]).map(x=>String(x.identifier||'').replace(/[^0-9Xx]/g,'').toUpperCase());
+        return !ids.length||ids.includes(clean);
+      });
+      const v=candidates[0];
+      if(v){
+        const date=String(v.publishedDate||'').match(/(?:19|20)\d{2}/);
+        const categories=(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean);
+        const description=String(v.description||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim().slice(0,3000);
+        return {title:v.title||'',authors:v.authors||[],publisher:v.publisher||'',year:date?Number(date[0]):null,description,tags:categories,pageCount:v.pageCount||null,source:'Google Books'};
+      }
+    }
+  }catch(error){console.info('Google Books ISBN lookup unavailable:',error?.message||error)}
+  try{
+    const response=await fetch('https://openlibrary.org/isbn/'+encodeURIComponent(clean)+'.json',{signal:timeout()});
+    if(response.ok){
+      const v=await response.json();
+      const authors=[];
+      for(const item of (v.authors||[]).slice(0,5)){
+        const key=item?.key;
+        if(!key)continue;
+        try{const ar=await fetch('https://openlibrary.org'+key+'.json',{signal:timeout()});if(ar.ok){const a=await ar.json();if(a.name)authors.push(a.name)}}catch{}
+      }
+      const subjects=(v.subjects||[]).map(x=>typeof x==='string'?x:(x?.name||'')).filter(Boolean).slice(0,30);
+      const date=String(v.publish_date||'').match(/(?:19|20)\d{2}/);
+      return {title:v.title||'',authors,publisher:(v.publishers||[]).map(x=>typeof x==='string'?x:x?.name).filter(Boolean)[0]||'',year:date?Number(date[0]):null,description:typeof v.description==='string'?v.description:String(v.description?.value||''),tags:subjects,pageCount:v.number_of_pages||null,source:'Open Library'};
+    }
+  }catch(error){console.info('Open Library ISBN lookup unavailable:',error?.message||error)}
+  return null;
+}
 
-async function signOut(){if(live)await db.auth.signOut();me=null;books=[];pendingDocs=[];users=[];collections=[];selectedFiles=[];role='reader';page='home';query='';sortBy='title';sortDir='asc';viewMode='grid';density=3;filterCollection='';filterCategory='';favs.clear();history=[];login()}
+async function analyzeStoredDocument(id,showToast=true,tokenOverride=null){
+  let d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
+  if(!d){
+    const {data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed').eq('id',id).single();
+    if(error||!row)throw error||new Error('Documento no encontrado.');
+    d={id:row.id,title:row.title,authors:row.authors||[],year:row.publication_year||'',category:row.category||'General',pageCount:row.page_count||0,provider:row.provider,description:row.description||'',tags:row.tags||[],isbn:row.isbn||'',publisher:row.publisher||'',metadataSource:row.metadata_source||'filename',metadataReviewed:!!row.metadata_reviewed};
+  }
+  if(d.provider!=='r2')return {};
+  const {data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;
+  if(!token)throw new Error('Sesión vencida.');
+  const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+  const url=(c.pdfGatewayUrl||'').replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);
+  const task=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
+  try{
+    const pdf=await task.promise,meta=await pdf.getMetadata(),info=meta?.info||{};
+    let text='';
+    for(let n=1;n<=Math.min(pdf.numPages,8);n++){
+      const page=await pdf.getPage(n),tc=await page.getTextContent();
+      text+=tc.items.map(x=>(x.str||'')+(x.hasEOL?'\n':' ')).join('');
+    }
+    const normalized=[text,info.Subject||'',info.Keywords||''].join('\n').replace(/[\t\u00a0]+/g,' ').replace(/ {2,}/g,' ').replace(/\r/g,'\n');
+    const lines=normalized.split('\n').flatMap(line=>line.split(/ {3,}/)).map(x=>x.trim()).filter(x=>x.length>3);
+    const candidates=lines.filter(x=>x.length>=6&&x.length<=140&&!/^(isbn|issn|copyright|derechos|www\.|https?:|editorial|ediciones|impreso|printed|autor(?:es)?|índice|indice|contenido|contents)/i.test(x));
+    const infoTitle=String(info.Title||'').trim(),pdfTitle=infoTitle.length>=4&&infoTitle.length<=300?infoTitle:(candidates[0]||'');
+    const infoAuthor=String(info.Author||'').trim(),authorMatch=normalized.match(/(?:autor(?:es)?|compositor(?:es)?|escrito por|by)\s*[:\-]\s*([^\n]{3,100})/i);
+    const pdfAuthors=infoAuthor?infoAuthor.split(/[;,]/).map(x=>x.trim()).filter(Boolean):authorMatch?[authorMatch[1].trim()]:[];
+    const isbnMatch=normalized.match(/ISBN(?:-1[03])?\s*[:\-]?\s*((?:97[89][\s-]?)?[0-9Xx][0-9Xx\s-]{8,20}[0-9Xx])/i);
+    const isbn=isbnMatch?isbnMatch[1].replace(/[\s-]/g,'').toUpperCase():d.isbn||'';
+    const yearMatch=normalized.match(/(?:©|copyright|derechos reservados|edici[oó]n|impreso|publicado|printed|publication)\D{0,45}((?:19|20)\d{2})/i),pdfYear=yearMatch?Number(yearMatch[1]):null;
+    const pubMatch=normalized.match(/(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*([^\n]{3,90})/i),pdfPublisher=pubMatch?pubMatch[1].trim().slice(0,200):'';
+    const embeddedTags=String(info.Keywords||'').split(/[,;|]/).map(x=>x.trim()).filter(x=>x.length>1&&x.length<50);
+    const lower=normalized.toLowerCase(),taxonomy=[['guitarra',['guitarra','guitar','tablatura','fretboard']],['piano',['piano','teclado','keyboard']],['armonía',['armonía','armonia','harmony','acordes']],['teoría musical',['teoría musical','teoria musical','escalas','modos griegos','contrapunto']],['partituras',['partitura','score','pentagrama','notación musical','notacion musical']],['canto y voz',['canto','voz','vocal','coral','coro']],['jazz',['jazz','bebop','swing','blues']]];
+    const pdfTags=taxonomy.filter(([_,terms])=>terms.some(term=>lower.includes(term))).map(([tag])=>tag);
+    const external=isbn?await lookupIsbnMetadata(isbn):null;
+    const isManual=d.metadataReviewed||d.metadataSource==='manual';
+    const externalTitle=external?.title&&external.title.trim().length>2?external.title.trim():'';
+    const resolvedTitle=externalTitle||pdfTitle;
+    const resolvedAuthors=external?.authors?.length?external.authors:pdfAuthors;
+    const resolvedYear=external?.year||pdfYear;
+    const resolvedPublisher=external?.publisher||pdfPublisher;
+    const externalTags=external?.tags||[];
+    const allTags=[...new Set([...embeddedTags,...pdfTags,...externalTags].map(x=>String(x).trim()).filter(x=>x.length>1&&x.length<80))].slice(0,30);
+    const combinedText=(allTags.join(' ')+' '+lower).toLowerCase();
+    let inferredCategory=d.category;
+    if(combinedText.includes('guitarra')||combinedText.includes('guitar'))inferredCategory='Partituras para guitarra';
+    else if(combinedText.includes('piano'))inferredCategory='Música para piano';
+    else if(combinedText.includes('jazz'))inferredCategory='Jazz';
+    else if(combinedText.includes('music')||combinedText.includes('música')||combinedText.includes('musica'))inferredCategory='Música';
+    else if(allTags.length)inferredCategory=allTags[0].slice(0,100);
+    const updates={page_count:pdf.numPages,metadata_reviewed:false};
+    if(!isManual){
+      if((d.metadataSource==='filename'||!d.metadataSource||!d.title)&&resolvedTitle)updates.title=resolvedTitle.slice(0,300);
+      if(!d.authors?.length&&resolvedAuthors.length)updates.authors=resolvedAuthors.slice(0,20);
+      if(!d.year&&resolvedYear)updates.publication_year=resolvedYear;
+      if(!d.isbn&&isbn&&[10,13].includes(isbn.length))updates.isbn=isbn;
+      if(!d.publisher&&resolvedPublisher)updates.publisher=resolvedPublisher.slice(0,200);
+      if((!d.category||d.category==='General')&&allTags.length)updates.category=inferredCategory;
+      if(!d.tags?.length&&allTags.length)updates.tags=allTags;
+      const externalDescription=String(external?.description||'').trim();
+      if(!d.description&&(externalDescription||info.Subject))updates.description=(externalDescription||String(info.Subject||'')).slice(0,3000);
+      updates.metadata_source=external?'pdf+isbn':(resolvedTitle||resolvedAuthors.length||isbn||resolvedYear||allTags.length?'pdf_text':'filename');
+    }else{
+      updates.metadata_source='manual';
+      updates.metadata_reviewed=true;
+    }
+    const {error}=await db.from('documents').update(updates).eq('id',id);
+    if(error)throw error;
+    return {...updates,isbnLookup:!!external,metadataProvider:external?.source||null};
+  }finally{try{await task.destroy()}catch{}}
+}
+
+async function signOut(){if(live)await db.auth.signOut();me=null;books=[];pendingDocs=[];users=[];collections=[];selectedFiles=[];role='reader';page='home';query='';sortBy='title';sortDir='asc';viewMode='grid';density=3;filterCollection='';filterCategory='';favs.clear();history=[];bookAdminStatus='all';login()}
 async function startLibrary(){
   try{
     const {data:{session},error}=await db.auth.getSession();
