@@ -384,13 +384,13 @@ async function runMetadataQueue(ids=null,tokenOverride=null,reprocessAll=false){
  let request=db.from('documents').select('id,title,authors,publication_year,category,isbn,publisher,original_filename').eq('provider','r2').eq('metadata_reviewed',false).eq('upload_status','stored').order('created_at',{ascending:true}).limit(500);
  if(!reprocessAll)request=request.in('metadata_status',['pending','processing','partial','error']);if(Array.isArray(ids)&&ids.length)request=request.in('id',ids);
  const{data:documents,error}=await request;if(error)return toast('No se pudo cargar la cola de metadatos: '+error.message);const queue=documents||[];if(!queue.length)return toast('No hay PDFs pendientes para identificar.');
- metadataInProgress=true;metadataCancelRequested=false;metadataQueueProgress={done:0,total:queue.length,failed:0};
+ metadataInProgress=true;metadataCancelRequested=false;metadataQueueProgress={done:0,total:queue.length,failed:0};updateBookSelectionUI();
  const stop=document.querySelector('#stop-metadata');if(stop)stop.disabled=false;
  const refresh=()=>{refreshMetadataQueueBanner();const s=document.querySelector('#stop-metadata');if(s)s.disabled=!metadataInProgress};refresh();
  const rowStatus=(id,message)=>document.querySelectorAll('[data-book-id="'+id+'"] .metadata-state').forEach(x=>x.textContent=message),allCandidates=[...books,...pendingDocs];let cursor=0;
  const worker=async()=>{while(true){if(metadataCancelRequested)return;const i=cursor++;if(i>=queue.length)return;const doc=queue[i];try{const{error:markError}=await db.from('documents').update({metadata_status:'processing',metadata_error:null}).eq('id',doc.id);if(markError)throw markError;rowStatus(doc.id,'Identificando');await analyzeStoredDocument(doc.id,false,token,allCandidates)}catch(e){const message=String(e?.message||'Error de identificación').slice(0,500);await db.from('documents').update({metadata_status:'error',metadata_error:message}).eq('id',doc.id);metadataQueueProgress.failed++;rowStatus(doc.id,'Error · reintentar')}finally{metadataQueueProgress.done++;refresh()}}};
  await Promise.all(Array.from({length:Math.min(2,queue.length)},worker));
- const cancelled=metadataCancelRequested;metadataInProgress=false;metadataCancelRequested=false;refresh();
+ const cancelled=metadataCancelRequested;metadataInProgress=false;metadataCancelRequested=false;refresh();updateBookSelectionUI();
  toast((cancelled?'Cola detenida':'Identificación terminada')+': '+metadataQueueProgress.done+'/'+metadataQueueProgress.total+' PDF(s) procesados · '+metadataQueueProgress.failed+' error(es).');
  if(me&&page==='books')await loadUser(me);
 }
