@@ -111,6 +111,24 @@ function titleFromFilename(fileName) {
   return base.replace(/[_]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || "Documento sin título";
 }
 
+function pdfContentDisposition(title, disposition = "inline") {
+  const cleanTitle = String(title || "document")
+    .replace(/\s*\|\s*(?:BA|MEL)\s*[-.]?\s*\d{3,8}\s*$/i, "")
+    .replace(/\.pdf$/i, "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 150) || "document";
+  const filename = cleanTitle + ".pdf";
+  const fallback = filename.normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/["\\;]/g, "_");
+  const encoded = encodeURIComponent(filename)
+    .replace(/[!'()*]/g, char => "%" + char.charCodeAt(0).toString(16).toUpperCase());
+  return disposition + '; filename="' + fallback + '"; filename*=UTF-8\'\'' + encoded;
+}
+
 function normalizeDocumentMetadata(input, fallbackTitle) {
   input = input && typeof input === "object" ? input : {};
   const title = (typeof input.title === "string" ? input.title.trim() : "") || fallbackTitle;
@@ -863,7 +881,7 @@ async function lookupMelosProduct(request, env, headers) {
       // The caller's JWT is forwarded to PostgREST. The documents RLS policy
       // decides whether this particular user may see this particular record.
       const query = new URLSearchParams({
-        select: "r2_key,mime_type",
+        select: "r2_key,mime_type,title",
         id: `eq.${documentId}`,
         provider: "eq.r2",
         limit: "1"
@@ -898,7 +916,8 @@ async function lookupMelosProduct(request, env, headers) {
       if (!metadata) return reply("Document not found", 404, headers);
 
       headers.set("Content-Type", "application/pdf");
-      headers.set("Content-Disposition", 'inline; filename="document.pdf"');
+      const downloadMode = new URL(request.url).searchParams.get("download") === "1";
+      headers.set("Content-Disposition", pdfContentDisposition(document.title, downloadMode ? "attachment" : "inline"));
       headers.set("Accept-Ranges", "bytes");
       headers.set("Cache-Control", "private, no-store, no-cache, max-age=0, must-revalidate");
       headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
