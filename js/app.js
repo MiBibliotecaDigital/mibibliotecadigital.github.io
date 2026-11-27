@@ -1103,7 +1103,9 @@ async function melosLookupPublisherNumber(identifier,trace=[]){
  if(!tags.some(x=>metadataTextKey(x)==='partituras'))tags.unshift('Partituras');
  if(!tags.some(x=>metadataTextKey(x)==='musica'))tags.unshift('Música');
  const author=metadataAuthorClean(product.author||'');
- const authors=metadataAuthorUsable(author)?[author]:[];
+ // The value in the official "Autor/Marca" field is authoritative as-is.
+ // Labels such as "Autores varios" are valid catalog values, not failed person names.
+ const authors=author?[author]:[];
  const catalogDetails={
   ...product,
   source:'Ediciones Melos · ficha oficial',
@@ -1236,7 +1238,7 @@ function metadataCategoryFromTags(tags,kind){
  if(kind==='music_score'){
   if(s.includes('guitarra'))return'Partituras para guitarra';
   if(s.includes('piano'))return'Partituras para piano';
-  if(s.includes('voz y coro'))return'Partituras corales';
+  if(s.includes('voz y coro')||s.includes('coro'))return'Partituras corales';
   return'Partituras';
  }
  if(s.includes('guitarra')||s.includes('guitar'))return'Partituras para guitarra';
@@ -1352,17 +1354,53 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const lookupTrace=[];
   const external=await lookupBibliographicCandidate(contexts,identifiers,kind,lookupTrace);
   const accepted=metadataCandidateAccepted(external);
+  const detectedPublisherId=identifiers.find(x=>x.type==='publisher_number');
+  const exactMelosMatch=accepted&&external?.source==='Ediciones Melos · catálogo oficial'&&
+   external.identifierMatch?.type==='publisher_number'&&
+   metadataNormalizeIdentifier('publisher_number',external.catalogDetails?.verifiedCode||'')===
+   metadataNormalizeIdentifier('publisher_number',detectedPublisherId?.value||'');
   const finalKind=kind==='unknown'&&accepted?(external.documentKind||(external.printType==='BOOK'?'book':'unknown')):kind;
   const proposedTitle=accepted?external.title:primaryTitle;
-  const proposedAuthors=accepted&&external.authors?.length?external.authors:pdfAuthors;
-  const persistedIdentifiers=accepted?metadataUniqueIdentifiers([...identifiers,...(external?.identifiers||[])]):identifiers;
+  // On an exact Melos code match, never fall back to PDF text for fields absent from the official record.
+  const proposedAuthors=exactMelosMatch
+   ?(String(external.catalogDetails?.author||'').trim()?[metadataAuthorClean(external.catalogDetails.author)]:[])
+   :(accepted&&external.authors?.length?external.authors:pdfAuthors);
+  const persistedIdentifiers=accepted
+   ?metadataUniqueIdentifiers(exactMelosMatch?(external?.identifiers||[]):[...identifiers,...(external?.identifiers||[])])
+   :identifiers;
   const duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn,bibliographicIdentifiers:persistedIdentifiers};
   const possibleDuplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
   const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
-  const publisherId=identifiers.find(x=>x.type==='publisher_number');
+  const publisherId=detectedPublisherId;
   const worldcatQuery=publisherId?'mn='+String(publisherId.value).replace(/[^0-9A-Z]/gi,'').toLowerCase():null;
-  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear,catalogLookup:{attempts:lookupTrace,selected:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null,noExactMatch:!external,worldcatQuery},melosCatalog:accepted&&external?.catalogDetails?external.catalogDetails:null}};
-  if(!manual){
+  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{
+   pageCount:pdf.numPages,sampledPages,
+   extractedTitle:exactMelosMatch?external.title:extractedTitle,
+   filenameTitle:filename.title,
+   authors:exactMelosMatch?proposedAuthors:pdfAuthors,
+   identifiers:persistedIdentifiers,
+   repeatedLines,
+   publisher:exactMelosMatch?(external.publisher||''):pdfPublisher,
+   year:exactMelosMatch?null:pdfYear,
+   ...(exactMelosMatch?{metadataAuthority:'Ediciones Melos · código exacto verificado',pdfExtracted:{title:extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,publisher:pdfPublisher,year:pdfYear,repeatedLines}}:{}),
+   catalogLookup:{attempts:lookupTrace,selected:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null,noExactMatch:!external,worldcatQuery},
+   melosCatalog:exactMelosMatch?external.catalogDetails:null
+  }};
+  if(exactMelosMatch){
+   // Exact publisher-number match makes the official catalog the source of truth.
+   updates.title=String(external.title||'').slice(0,300);
+   updates.authors=proposedAuthors.slice(0,20);
+   updates.isbn=external.isbns?.[0]?metadataValidIsbn(external.isbns[0]):null;
+   updates.publisher=String(external.publisher||'').slice(0,200)||null;
+   updates.publication_year=external.year||null;
+   updates.description=String(external.description||'');
+   const tags=metadataBuildTags({filename:'',text:'',kind:'music_score',catalog:external,accepted:true,embeddedTags:[],publisher:external.publisher||'',identifiers:persistedIdentifiers});
+   updates.tags=tags;
+   updates.category=metadataCategoryFromTags(tags,'music_score');
+   updates.bibliographic_identifiers=persistedIdentifiers;
+   updates.metadata_source='pdf_text';
+   updates.metadata_reviewed=false;
+  }else if(!manual){
    if(metadataTitleUsable(proposedTitle))updates.title=proposedTitle.slice(0,300);
    if(proposedAuthors.length)updates.authors=proposedAuthors.slice(0,20);
    else if((d.authors||[]).length&&!pdfAuthors.length)updates.authors=[];
@@ -1398,11 +1436,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   if(possibleDuplicates.length)updates.metadata_error='Posible coincidencia con "'+String(possibleDuplicates[0].title||'otro registro')+'". Verificá si son copias o ediciones distintas.';
   else if(matchStatus==='review')updates.metadata_error='Se encontró una posible coincidencia de catálogo de '+external.score+'/100. Confirmá título, autor e identificadores antes de aplicarla.';
   else if(matchStatus==='non_book')updates.metadata_error='El documento parece ser una publicación no monográfica. Revisá su tipo antes de publicarlo.';
-  const exactMelosMatch=accepted&&external?.source==='Ediciones Melos · catálogo oficial'&&
-   external.identifierMatch?.type==='publisher_number'&&
-   metadataNormalizeIdentifier('publisher_number',external.catalogDetails?.verifiedCode||'')===
-   metadataNormalizeIdentifier('publisher_number',publisherId?.value||'');
-  const autoPublished=exactMelosMatch&&!manual&&!possibleDuplicates.length&&
+  const autoPublished=exactMelosMatch&&!possibleDuplicates.length&&
    (d.uploadStatus||d.upload_status)==='stored';
   if(autoPublished)updates.is_published=true;
   const{error}=await db.from('documents').update(updates).eq('id',id);
