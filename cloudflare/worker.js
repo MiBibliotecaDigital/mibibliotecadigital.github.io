@@ -612,6 +612,326 @@ async function getLibraryThumbnail(request, env, headers, documentId) {
   return new Response(object.body, { status: 200, headers });
 }
 
+async function putLibraryThumbnail(request, env, headers, documentId) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  const contentType = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  if (contentType !== "image/jpeg") return reply("Only JPEG thumbnails are accepted", 415, headers);
+  const declaredSize = Number(request.headers.get("Content-Length") || 0);
+  if (declaredSize > 512 * 1024) return reply("Thumbnail exceeds the 512 KiB limit", 413, headers);
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const query = new URLSearchParams({ select: "id,provider,r2_key,upload_status", id: "eq." + documentId, provider: "eq.r2", upload_status: "eq.stored", limit: "1" });
+  const response = await fetch(base + "/rest/v1/documents?" + query, {
+    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
+  });
+  if (!response.ok) return reply("Could not verify document ownership", 502, headers);
+  const rows = await response.json();
+  if (!Array.isArray(rows) || !rows[0]) return reply("Stored document not found", 404, headers);
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!bytes.length || bytes.length > 512 * 1024) return reply("Thumbnail size is invalid", 413, headers);
+  if (bytes.length < 3 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) return reply("Thumbnail is not a valid JPEG image", 415, headers);
+  await env.BIBLIOTECA.put("covers/" + documentId + ".jpg", bytes, {
+    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=31536000, immutable" },
+    customMetadata: { documentId, generatedBy: auth.user.id }
+  });
+  return jsonReply({ ok: true, documentId, size: bytes.length }, 201, headers);
+}
+
+const COVER_PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs";
+const COVER_PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs";
+const COVER_DAILY_BROWSER_BUDGET_MS = 8 * 60 * 1000;
+function coverJobKey(documentId) { return "cover-jobs/" + documentId + ".json"; }
+function coverUsageKey(day) { return "cover-jobs/usage-" + day + ".json"; }
+function encodeBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+async function createCoverSignature(env, documentId, key, expires) {
+  const secret = String(env.COVER_RENDER_SECRET || env.ISBNLAB_API_TOKEN || "");
+  if (secret.length < 16) throw new Error("Cover rendering signing secret is not configured");
+  const cryptoKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const payload = new TextEncoder().encode("cover-v1\n" + documentId + "\n" + key + "\n" + expires);
+  return encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, payload)));
+}
+async function verifyCoverSignature(request, env, documentId) {
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key") || "";
+  const expires = Number(url.searchParams.get("exp"));
+  const signature = url.searchParams.get("sig") || "";
+  const now = Math.floor(Date.now() / 1000);
+  if (!validUploadKey(key) || !Number.isSafeInteger(expires) || expires <= now ||
+      expires > now + 15 * 60 || !/^[A-Za-z0-9_-]{40,50}$/.test(signature)) return null;
+  const expected = await createCoverSignature(env, documentId, key, expires);
+  if (signature !== expected) return null;
+  const metadata = await env.BIBLIOTECA.head(key);
+  if (!metadata || metadata.customMetadata?.documentId !== documentId) return null;
+  return { key, metadata, expires, signature };
+}
+function makeCoverRenderHtml(sourceUrl) {
+  const script = [
+    "const pdfjs = await import(" + JSON.stringify(COVER_PDFJS_URL) + ");",
+    "pdfjs.GlobalWorkerOptions.workerSrc = " + JSON.stringify(COVER_PDFJS_WORKER_URL) + ";",
+    "const task = pdfjs.getDocument({url:" + JSON.stringify(sourceUrl) + ",disableAutoFetch:true,disableStream:true,rangeChunkSize:65536,isEvalSupported:false});",
+    "const pdf = await task.promise;",
+    "const page = await pdf.getPage(1);",
+    "const base = page.getViewport({scale:1});",
+    "const scale = Math.min(420/base.width,580/base.height,1.2);",
+    "const viewport = page.getViewport({scale});",
+    "const canvas = document.getElementById('cover');",
+    "canvas.width = Math.max(1,Math.ceil(viewport.width));",
+    "canvas.height = Math.max(1,Math.ceil(viewport.height));",
+    "const context = canvas.getContext('2d',{alpha:false});",
+    "context.fillStyle = '#ffffff'; context.fillRect(0,0,canvas.width,canvas.height);",
+    "await page.render({canvasContext:context,viewport,background:'rgb(255,255,255)'}).promise;",
+    "document.body.dataset.coverReady = '1';",
+    "page.cleanup(); await pdf.destroy();"
+  ].join("\n");
+  return [
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+    "<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}body{display:flex;justify-content:center;align-items:flex-start;min-width:420px;min-height:580px}canvas{display:block;max-width:420px;max-height:580px}</style>",
+    "</head><body><canvas id='cover'></canvas><script type='module'>",
+    "try { " + script + " } catch (error) { document.body.dataset.coverError = String(error && error.message || error); throw error; }",
+    "</script></body></html>"
+  ].join("");
+}
+async function serveInternalCoverRender(request, env, headers, documentId) {
+  if (request.method !== "GET") return reply("Method not allowed", 405, headers);
+  const access = await verifyCoverSignature(request, env, documentId);
+  if (!access) return reply("Not found", 404, headers);
+  const sourceUrl = "/__cover-source/" + documentId + "?key=" + encodeURIComponent(access.key) +
+    "&exp=" + access.expires + "&sig=" + encodeURIComponent(access.signature);
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return new Response(makeCoverRenderHtml(sourceUrl), { status: 200, headers });
+}
+async function serveInternalCoverSource(request, env, headers, documentId) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    headers.set("Allow", "GET, HEAD");
+    return reply("Method not allowed", 405, headers);
+  }
+  const access = await verifyCoverSignature(request, env, documentId);
+  if (!access) return reply("Not found", 404, headers);
+  const range = parseRange(request.headers.get("Range"), access.metadata.size);
+  if (range?.invalid) {
+    headers.set("Content-Range", "bytes */" + access.metadata.size);
+    return reply("Requested range is not satisfiable", 416, headers);
+  }
+  headers.set("Content-Type", "application/pdf");
+  headers.set("Accept-Ranges", "bytes");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  if (range) {
+    headers.set("Content-Length", String(range.length));
+    headers.set("Content-Range", "bytes " + range.start + "-" + range.end + "/" + access.metadata.size);
+  } else headers.set("Content-Length", String(access.metadata.size));
+  if (request.method === "HEAD") return new Response(null, { status: range ? 206 : 200, headers });
+  const object = await env.BIBLIOTECA.get(access.key, range ? { range: range.options } : undefined);
+  if (!object?.body) return reply("PDF not found", 404, headers);
+  return new Response(object.body, { status: range ? 206 : 200, headers });
+}
+async function renderAndStoreCover(env, documentId, pdfKey) {
+  if (!env.BROWSER || typeof env.BROWSER.quickAction !== "function") throw new Error("Cloudflare Browser Run binding BROWSER is unavailable");
+  const coverKey = "covers/" + documentId + ".jpg";
+  if (await env.BIBLIOTECA.head(coverKey)) return { alreadyExists: true, browserMsUsed: 0 };
+  const pdfMetadata = await env.BIBLIOTECA.head(pdfKey);
+  if (!pdfMetadata || pdfMetadata.customMetadata?.documentId !== documentId) throw new Error("Stored PDF metadata does not match the document");
+  const expires = Math.floor(Date.now() / 1000) + 10 * 60;
+  const signature = await createCoverSignature(env, documentId, pdfKey, expires);
+  const gateway = String(env.COVER_GATEWAY_ORIGIN || "").replace(/\/+$/, "");
+  if (!gateway) throw new Error("COVER_GATEWAY_ORIGIN is not configured");
+  const renderUrl = gateway + "/__cover-render/" + documentId + "?key=" + encodeURIComponent(pdfKey) +
+    "&exp=" + expires + "&sig=" + encodeURIComponent(signature);
+  const screenshot = await env.BROWSER.quickAction("screenshot", {
+    url: renderUrl, selector: "#cover",
+    viewport: { width: 440, height: 600, deviceScaleFactor: 1 },
+    gotoOptions: { waitUntil: "networkidle0", timeout: 60000 },
+    waitForSelector: { selector: "body[data-cover-ready='1']", timeout: 60000 },
+    screenshotOptions: { type: "jpeg", quality: 76, optimizeForSpeed: true, omitBackground: false }
+  });
+  if (!screenshot?.ok) {
+    let detail = "";
+    try { detail = await screenshot.text(); } catch {}
+    throw new Error("Browser Run screenshot failed · HTTP " + (screenshot?.status || "unknown") + (detail ? " · " + detail.slice(0, 240) : ""));
+  }
+  const contentType = (screenshot.headers.get("Content-Type") || "").toLowerCase();
+  if (!contentType.includes("image/jpeg")) throw new Error("Browser Run returned unexpected image type: " + (contentType || "unknown"));
+  const bytes = new Uint8Array(await screenshot.arrayBuffer());
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) throw new Error("Browser Run did not return a valid JPEG");
+  if (bytes.length > 512 * 1024) throw new Error("Rendered cover exceeds 512 KiB");
+  const browserMsUsed = Math.max(0, Number(screenshot.headers.get("X-Browser-Ms-Used")) || 3000);
+  await env.BIBLIOTECA.put(coverKey, bytes, {
+    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=31536000, immutable" },
+    customMetadata: { documentId, generatedBy: "cloudflare-browser-run", sourceKey: pdfKey, page: "1" }
+  });
+  return { alreadyExists: false, size: bytes.length, browserMsUsed };
+}
+async function readCoverUsage(env, day) {
+  const object = await env.BIBLIOTECA.get(coverUsageKey(day));
+  if (!object) return { day, browserMsUsed: 0, generated: 0 };
+  try {
+    const value = await object.json();
+    return { day, browserMsUsed: Math.max(0, Number(value.browserMsUsed) || 0), generated: Math.max(0, Number(value.generated) || 0) };
+  } catch { return { day, browserMsUsed: 0, generated: 0 }; }
+}
+async function writeCoverUsage(env, usage) {
+  await env.BIBLIOTECA.put(coverUsageKey(usage.day), JSON.stringify({
+    day: usage.day, browserMsUsed: usage.browserMsUsed, generated: usage.generated,
+    updatedAt: new Date().toISOString(), dailyLimitMs: COVER_DAILY_BROWSER_BUDGET_MS
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+}
+const COVER_BOOTSTRAP_KEY = "cover-jobs/bootstrap-v1.done.json";
+
+async function listAllR2Objects(env, prefix, include = []) {
+  const objects = [];
+  let cursor;
+  do {
+    const page = await env.BIBLIOTECA.list({
+      prefix, limit: 1000,
+      ...(cursor ? { cursor } : {}),
+      ...(include.length ? { include } : {})
+    });
+    objects.push(...(page.objects || []));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return objects;
+}
+
+async function enqueueCoverJob(env, documentId, pdfKey) {
+  if (!UUID_RE.test(documentId || "") || !validUploadKey(pdfKey)) return false;
+  const coverKey = "covers/" + documentId + ".jpg";
+  if (await env.BIBLIOTECA.head(coverKey)) {
+    await env.BIBLIOTECA.delete(coverJobKey(documentId));
+    return false;
+  }
+  const existing = await getCoverRetryState(env, documentId);
+  await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+    documentId, pdfKey, status: "pending",
+    attempts: existing.attempts || 0,
+    retryAfter: existing.retryAfter || 0,
+    updatedAt: new Date().toISOString()
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+  return true;
+}
+
+async function bootstrapCoverQueue(env) {
+  if (await env.BIBLIOTECA.head(COVER_BOOTSTRAP_KEY)) return { alreadyDone: true, queued: 0 };
+  const pdfObjects = await listAllR2Objects(env, "library/", ["customMetadata"]);
+  let queued = 0, skipped = 0;
+  for (const object of pdfObjects) {
+    const documentId = object.customMetadata?.documentId || "";
+    if (!validUploadKey(object.key) || !UUID_RE.test(documentId)) continue;
+    const coverExists = await env.BIBLIOTECA.head("covers/" + documentId + ".jpg");
+    if (coverExists) { skipped++; continue; }
+    await enqueueCoverJob(env, documentId, object.key);
+    queued++;
+  }
+  await env.BIBLIOTECA.put(COVER_BOOTSTRAP_KEY, JSON.stringify({
+    version: 1, completedAt: new Date().toISOString(), scanned: pdfObjects.length,
+    queued, existingCovers: skipped
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+  console.info("One-time cover queue bootstrap completed", { scanned: pdfObjects.length, queued, existingCovers: skipped });
+  return { alreadyDone: false, queued };
+}
+
+async function getCoverRetryState(env, documentId) {
+  const object = await env.BIBLIOTECA.get(coverJobKey(documentId));
+  if (!object) return { attempts: 0, retryAfter: 0, leaseUntil: 0, pdfKey: "" };
+  try {
+    const value = await object.json();
+    return {
+      ...value,
+      attempts: Math.max(0, Number(value.attempts) || 0),
+      retryAfter: Math.max(0, Number(value.retryAfter) || 0),
+      leaseUntil: Math.max(0, Number(value.leaseUntil) || 0),
+      pdfKey: typeof value.pdfKey === "string" ? value.pdfKey : ""
+    };
+  } catch {
+    return { attempts: 0, retryAfter: 0, leaseUntil: 0, pdfKey: "" };
+  }
+}
+
+async function markCoverFailure(env, documentId, error, previous = {}) {
+  const current = await getCoverRetryState(env, documentId);
+  const attempts = Math.max(current.attempts, previous.attempts || 0) + 1;
+  const delayMinutes = Math.min(60, 5 * (2 ** Math.min(attempts - 1, 4)));
+  await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+    documentId, pdfKey: current.pdfKey || previous.pdfKey || "",
+    status: "pending", attempts,
+    retryAfter: Date.now() + delayMinutes * 60 * 1000,
+    leaseUntil: 0,
+    lastError: String(error?.message || error).slice(0, 500),
+    updatedAt: new Date().toISOString()
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+}
+
+async function processMissingCoverThumbnails(env, maxPerRun = 2) {
+  if (!env.BIBLIOTECA || !env.BROWSER) {
+    console.warn("Cover queue paused: R2 or Browser Run binding unavailable");
+    return;
+  }
+
+  const bootstrap = await bootstrapCoverQueue(env);
+  const day = new Date().toISOString().slice(0, 10);
+  const usage = await readCoverUsage(env, day);
+  if (usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) {
+    console.info("Cover queue paused at daily Browser Run safety budget", usage);
+    return;
+  }
+
+  const entries = await listAllR2Objects(env, "cover-jobs/");
+  const pending = entries.filter(entry =>
+    /^cover-jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/i.test(entry.key)
+  );
+
+  let attempted = 0, generated = 0, alreadyPresent = 0, failed = 0;
+  for (const entry of pending) {
+    if (attempted >= maxPerRun || usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) break;
+    const documentId = entry.key.slice("cover-jobs/".length, -".json".length);
+    const job = await getCoverRetryState(env, documentId);
+    if (!job.pdfKey || !validUploadKey(job.pdfKey)) continue;
+    if (job.retryAfter > Date.now() || job.leaseUntil > Date.now()) continue;
+
+    const coverKey = "covers/" + documentId + ".jpg";
+    if (await env.BIBLIOTECA.head(coverKey)) {
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
+      alreadyPresent++;
+      continue;
+    }
+
+    // A short lease prevents concurrent cron invocations from rendering the same PDF twice.
+    const leasedUntil = Date.now() + 3 * 60 * 1000;
+    await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+      ...job, documentId, status: "processing", leaseUntil: leasedUntil,
+      updatedAt: new Date().toISOString()
+    }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+
+    attempted++;
+    try {
+      const result = await renderAndStoreCover(env, documentId, job.pdfKey);
+      usage.browserMsUsed += result.browserMsUsed || 0;
+      if (!result.alreadyExists) { usage.generated++; generated++; }
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
+      await writeCoverUsage(env, usage);
+    } catch (error) {
+      failed++;
+      console.error("Server-side cover generation failed", { documentId, key: job.pdfKey, error: String(error) });
+      await markCoverFailure(env, documentId, error, job);
+      await writeCoverUsage(env, usage);
+    }
+  }
+
+  console.info("Server-side cover queue batch", {
+    day, bootstrapQueued: bootstrap.queued, pending: pending.length,
+    attempted, generated, alreadyPresent, failed,
+    browserMsUsed: usage.browserMsUsed, dailyBudgetMs: COVER_DAILY_BROWSER_BUDGET_MS
+  });
+}
 
 export default {
   async fetch(request, env, ctx) {
