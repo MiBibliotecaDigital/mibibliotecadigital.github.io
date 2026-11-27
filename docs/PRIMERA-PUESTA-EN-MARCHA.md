@@ -3,7 +3,7 @@
 La demo utiliza cuentas y documentos ficticios. No subir libros privados hasta terminar los pasos de backend.
 
 1. Activar GitHub Pages desde main / root.
-2. Crear Supabase y ejecutar la migración inicial en SQL Editor.
+2. Crear Supabase y ejecutar las migraciones `202611270001_initial_schema.sql` y `202611270002_harden_profile_updates.sql`, en ese orden, en SQL Editor.
 3. Crear el primer usuario Auth y promover su perfil a admin.
 4. Desplegar la función admin-create-user y configurar sus secretos.
 5. Desplegar el Worker de `cloudflare/worker.js`, enlazando el bucket privado mediante el binding `BIBLIOTECA`.
