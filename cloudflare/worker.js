@@ -334,7 +334,7 @@ async function uploadComplete(request, env, headers) {
 async function deleteLibraryDocument(request, env, headers, documentId) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
-  const base = env.SUPABASE_URL.replace(/\\/+$/, "");
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
   const selectQuery = new URLSearchParams({ select: "id,provider,r2_key", id: "eq." + documentId, limit: "1" });
   const metadataResponse = await fetch(base + "/rest/v1/documents?" + selectQuery, {
     headers: {
