@@ -1072,6 +1072,32 @@ async function imslpLookupPublisherNumber(identifier,contexts=[]){
   return{title,authors:authorRaw?[metadataAuthorClean(authorRaw)]:[],isbns:[],identifiers:[identifier],publisher:'',year:null,description:metadataCleanDescription(String(item.snippet||'').replace(/<[^>]*>/g,' ')),tags:['Música','Partituras'],pageCount:null,source:'IMSLP · número editorial',printType:'MUSIC',documentKind:'music_score',sourceId:item.title};
  }).filter(x=>metadataTitleUsable(x.title));
 }
+function metadataMelosPersonNames(value){
+ const generic=/^(?:autores? varios|varios autores|various authors|multiple authors|an[oó]nimos?|unknown)$/i;
+ const entries=(Array.isArray(value)?value:[value]).flatMap(item=>
+  String(item||'').split(/[\\/;|\\n]+/).map(part=>part.trim()).filter(Boolean)
+ );
+ const output=[],seen=new Set();
+ for(let entry of entries){
+  entry=entry
+   .replace(/\\s+(?:(?:y|e)\\s+otros?|and\\s+others?|et\\s+al\\.?)\\s*$/i,'')
+   .replace(/^[\\s,;|]+|[\\s,;|]+$/g,'')
+   .replace(/\\s+/g,' ')
+   .trim();
+  if(!entry||generic.test(metadataTextKey(entry))||entry.length>160)continue;
+  const key=metadataTextKey(entry);
+  if(seen.has(key))continue;
+  seen.add(key);
+  output.push(entry);
+ }
+ return output;
+}
+function metadataMelosAuthorList(product){
+ const namedAuthors=metadataMelosPersonNames(product?.author||'');
+ if(namedAuthors.length)return namedAuthors;
+ return metadataMelosPersonNames(product?.collaborators||[]);
+}
+
 async function melosLookupPublisherNumber(identifier,trace=[]){
  if(identifier?.type!=='publisher_number'||!/^(?:BA|MEL)\s*[-.]?\s*\d{3,8}$/i.test(identifier.value||''))return[];
  const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
@@ -1102,10 +1128,9 @@ async function melosLookupPublisherNumber(identifier,trace=[]){
  if(product.instrument)tags.unshift(product.instrument);
  if(!tags.some(x=>metadataTextKey(x)==='partituras'))tags.unshift('Partituras');
  if(!tags.some(x=>metadataTextKey(x)==='musica'))tags.unshift('Música');
- const author=metadataAuthorClean(product.author||'');
- // The value in the official "Autor/Marca" field is authoritative as-is.
- // Labels such as "Autores varios" are valid catalog values, not failed person names.
- const authors=author?[author]:[];
+ // Prefer explicit names from "Autor/Marca". When that field is generic
+ // ("Autores varios"), use the official "Colaboradores" names for author indexing.
+ const authors=metadataMelosAuthorList(product);
  const catalogDetails={
   ...product,
   source:'Ediciones Melos · ficha oficial',
