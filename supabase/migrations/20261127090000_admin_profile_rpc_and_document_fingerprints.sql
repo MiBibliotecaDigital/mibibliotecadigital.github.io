@@ -21,7 +21,7 @@ begin
   if v_admin_count<=1 then raise exception 'No se puede desactivar al último administrador activo.'; end if;
  end if;
  update public.profiles set full_name=coalesce(nullif(btrim(coalesce(p_full_name,'')),''),full_name),username=v_username,role=v_role,status=v_status where id=p_user_id;
- select to_jsonb(p) into v_target from public.profiles p where p.id=p_user_id;
+ select * into v_target from public.profiles p where p.id=p_user_id;
  return to_jsonb(v_target);
 end; $$;
 create or replace function private.admin_assert_user_deletable(p_user_id uuid)
