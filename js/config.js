@@ -1,1 +1,1 @@
-window.BIBLIOTECA_CONFIG={supabaseUrl:"",supabaseAnonKey:"",demoMode:true};
+window.BIBLIOTECA_CONFIG={supabaseUrl:"",supabaseAnonKey:"",pdfGatewayUrl:"",demoMode:true};
