@@ -1,6 +1,6 @@
 import{createClient}from'https://esm.sh/@supabase/supabase-js@2';
 const c=window.BIBLIOTECA_CONFIG||{},live=!!(c.supabaseUrl&&c.supabaseAnonKey&&c.demoMode===false),db=live?createClient(c.supabaseUrl,c.supabaseAnonKey):null,root=document.querySelector('#app');
-let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],uploadInProgress=false,metadataInProgress=false,metadataCancelRequested=false,metadataQueueProgress={done:0,total:0,failed:0},favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all';
+let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],uploadInProgress=false,metadataInProgress=false,metadataCancelRequested=false,metadataQueueProgress={done:0,total:0,failed:0},favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all',selectedBookIds=new Set();
 const sample=[['d1','Atlas del Archipielago Luminario','Elena Mar de Papel','Geografia imaginaria','atlas-luminario.pdf','sea'],['d2','Herbario de Arrecife Azul','Tomas del Invernadero','Naturaleza','herbario-arrecife-azul.pdf','leaf'],['d3','Cuaderno musical de Ciudad Resonante','Mara Afinacion','Musica','cuaderno-musica-ciudad.pdf','amber']].map(x=>({id:x[0],title:x[1],author:x[2],category:x[3],year:2026,pages:1,size:'PDF de muestra',provider:'demo',path:'/demo/pdfs/'+x[4],tone:x[5]}));
 const demoUsers=[{name:'Administracion de prueba',email:'admin@biblioteca.local',role:'admin',status:'Activo'},{name:'Lector de ejemplo',email:'demo@biblioteca.local',role:'reader',status:'Activo'}];
 const esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),label=r=>r==='admin'?'Administrador':r==='editor'?'Editor':'Lector';
@@ -226,6 +226,7 @@ async function loadLibraryFingerprintMap(){
   }
   return map;
 }
+
 function bookManagementRows(search='',status='all'){
   const all=[...books,...pendingDocs],q=normalizedBookText(search);
   const rows=all.filter(b=>{
@@ -235,26 +236,41 @@ function bookManagementRows(search='',status='all'){
     const hay=normalizedBookText([b.title,(b.authors||[]).join(' '),b.isbn,b.publisher,b.category,(b.tags||[]).join(' '),b.description].join(' '));
     return !q||hay.includes(q);
   });
-  if(!rows.length)return '<tr><td colspan="8" class="empty-state">No hay libros que coincidan con este filtro.</td></tr>';
+  if(!rows.length)return '<tr><td colspan="9" class="empty-state">No hay libros que coincidan con este filtro.</td></tr>';
   return rows.map(b=>{
     const published=books.some(x=>x.id===b.id),collection=collections.find(x=>x.id===b.collectionId);
-    const duplicate=bookDuplicateMatch(b,all);
-    const loadLabel=uploadStatusLabel(b.uploadStatus);
+    const duplicate=bookDuplicateMatch(b,all),loadLabel=uploadStatusLabel(b.uploadStatus);
     const metaLabel=metadataStatusLabel(b.metadataStatus),matchLabel=metadataMatchLabel(b.metadataMatchStatus,b.metadataConfidence);
-    return '<tr data-book-id="'+esc(b.id)+'"><td><b>'+esc(b.title)+'</b><small>'+esc((b.authors||[]).join(', ')||'Autor sin identificar')+'</small>'+(duplicate?'<span class="duplicate-warning">Posible duplicado de: '+esc(duplicate.title)+'</span>':'')+'</td><td>'+esc(b.isbn||'—')+'</td><td>'+esc(collection?.name||'Sin colección')+'</td><td>'+(published?'<span class="pending-tag published-tag">Publicado</span>':'<span class="pending-tag">Borrador privado</span>')+'</td><td><span class="pending-tag">'+esc(loadLabel)+'</span></td><td><span class="pending-tag metadata-state">'+esc(metaLabel)+'</span>'+'<small>'+esc(matchLabel)+' · '+esc(metadataKindLabel(b.documentKind))+'</small>'+(b.metadataError?'<small>'+esc(b.metadataError)+'</small>':'')+'</td><td>'+esc(b.category||'General')+'</td><td><button class="small-action" data-edit-doc="'+esc(b.id)+'">Editar ficha</button>'+(b.uploadStatus==='stored'?'<button class="small-action" data-open="'+esc(b.id)+'">Vista previa</button>':'')+'<button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button></td></tr>';
+    const authorText=(b.authors||[]).join(', ')||'Autor sin identificar';
+    return '<tr data-book-id="'+esc(b.id)+'"><td class="select-cell"><input type="checkbox" data-select-book="'+esc(b.id)+'" aria-label="Seleccionar '+esc(b.title)+'" '+(selectedBookIds.has(b.id)?'checked':'')+'></td><td class="book-title-cell"><span class="row-title" title="'+esc(b.title)+'">'+esc(b.title)+'</span><span class="row-author" title="'+esc(authorText)+'"> · '+esc(authorText)+'</span>'+(duplicate?'<span class="duplicate-warning" title="Posible duplicado de: '+esc(duplicate.title)+'">Duplicado</span>':'')+'</td><td class="nowrap-cell">'+esc(b.isbn||'—')+'</td><td class="nowrap-cell">'+esc(collection?.name||'—')+'</td><td class="nowrap-cell">'+(published?'<span class="pending-tag published-tag">Publicado</span>':'<span class="pending-tag">Borrador</span>')+'</td><td class="nowrap-cell"><span class="pending-tag">'+esc(loadLabel)+'</span></td><td class="metadata-compact-cell"><span class="pending-tag metadata-state">'+esc(metaLabel)+'</span><span class="row-meta-detail" title="'+esc(b.metadataError||matchLabel)+'">'+esc(matchLabel)+'</span></td><td class="nowrap-cell"><span class="row-kind">'+esc(metadataKindLabel(b.documentKind))+'</span><span class="row-category"> · '+esc(b.category||'General')+'</span></td><td class="row-actions"><button class="small-action" data-edit-doc="'+esc(b.id)+'">Editar</button>'+(b.uploadStatus==='stored'?'<button class="small-action" data-open="'+esc(b.id)+'">Ver</button>':'')+'<button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button></td></tr>';
   }).join('');
 }
+
 function booksPage(){
   const all=[...books,...pendingDocs];
   const pendingMetadata=all.filter(b=>b.provider==='r2'&&!b.metadataReviewed&&['pending','processing','partial','error'].includes(b.metadataStatus)).length;
   const reanalyzeMetadata=all.filter(b=>b.provider==='r2'&&!b.metadataReviewed&&b.uploadStatus==='stored').length;
   const unfinishedUploads=all.filter(b=>b.provider==='r2'&&b.uploadStatus!=='stored').length;
   const queueText=metadataInProgress?'Metadatos: '+metadataQueueProgress.done+'/'+metadataQueueProgress.total+' · errores: '+metadataQueueProgress.failed:(pendingMetadata?pendingMetadata+' ficha(s) pendientes de análisis':'No hay metadatos pendientes');
-  return '<div class="heading"><div><h1>Administrar libros</h1><p>Los PDFs guardados se conservan aunque su ficha bibliográfica todavía no esté completa.</p></div><div class="books-admin-actions"><button class="secondary" id="reconcile-storage">Reconciliar R2 / recuperar nombres</button><button class="secondary" id="recover-local-filenames">Recuperar nombres desde carpeta local</button><input id="filename-source-folder" type="file" accept=".pdf,application/pdf" webkitdirectory directory multiple hidden><span id="filename-recovery-status" class="muted" aria-live="polite"></span><button class="primary" id="run-metadata" '+(metadataInProgress||!pendingMetadata?'disabled':'')+'>Identificar pendientes ('+pendingMetadata+')</button><button class="secondary" id="rebuild-metadata" '+(metadataInProgress||!reanalyzeMetadata?'disabled':'')+'>Identificar y revisar todos ('+reanalyzeMetadata+')</button><button class="secondary" id="stop-metadata" '+(metadataInProgress?'':'disabled')+'>Detener análisis</button></div></div><div class="metadata-queue-status" id="metadata-queue-status" aria-live="polite">'+esc(queueText)+'</div>'+(unfinishedUploads?'<p class="notice">Hay '+unfinishedUploads+' carga(s) incompleta(s). Podés revisar y eliminar los registros que no tengan PDF completo.</p>':'')+'<div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="panel"><table class="pending-table books-admin-table"><thead><tr><th>Libro / Autores</th><th>ISBN</th><th>Colección</th><th>Catálogo</th><th>Subida</th><th>Metadatos</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
+  return '<div class="heading"><div><h1>Administrar libros</h1><p>Los PDFs guardados se conservan aunque su ficha bibliográfica todavía no esté completa.</p></div><div class="books-admin-actions"><button class="secondary" id="reconcile-storage">Reconciliar R2 / recuperar nombres</button><button class="secondary" id="recover-local-filenames">Recuperar nombres desde carpeta local</button><input id="filename-source-folder" type="file" accept=".pdf,application/pdf" webkitdirectory directory multiple hidden><span id="filename-recovery-status" class="muted" aria-live="polite"></span><button class="primary" id="run-metadata" '+(metadataInProgress||!pendingMetadata?'disabled':'')+'>Identificar pendientes ('+pendingMetadata+')</button><button class="secondary" id="rebuild-metadata" '+(metadataInProgress||!reanalyzeMetadata?'disabled':'')+'>Identificar y revisar todos ('+reanalyzeMetadata+')</button><button class="secondary" id="stop-metadata" '+(metadataInProgress?'':'disabled')+'>Detener análisis</button></div></div><div class="metadata-queue-status" id="metadata-queue-status" aria-live="polite">'+esc(queueText)+'</div>'+(unfinishedUploads?'<p class="notice">Hay '+unfinishedUploads+' carga(s) incompleta(s). Podés revisar y eliminar los registros que no tengan PDF completo.</p>':'')+'<div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="bulk-selection-bar" id="bulk-selection-bar"><span id="bulk-selection-count">0 seleccionados</span><div><button class="secondary" id="analyze-selected-books" disabled>Analizar seleccionados</button><button class="danger-button" id="delete-selected-books" disabled>Eliminar seleccionados</button><button class="secondary" id="clear-book-selection" disabled>Limpiar selección</button></div></div><div class="panel books-admin-table-panel"><table class="pending-table books-admin-table"><thead><tr><th class="select-cell"><input type="checkbox" id="select-visible-books" aria-label="Seleccionar los libros visibles"></th><th>Libro / Autor</th><th>ISBN</th><th>Colección</th><th>Catálogo</th><th>Subida</th><th>Metadatos</th><th>Tipo / categoría</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
 }
 function refreshMetadataQueueBanner(){
   const status=document.querySelector('#metadata-queue-status');
   if(status)status.textContent=metadataInProgress?'Metadatos: '+metadataQueueProgress.done+'/'+metadataQueueProgress.total+' · errores: '+metadataQueueProgress.failed:(metadataQueueProgress.total?'Análisis finalizado · '+metadataQueueProgress.done+'/'+metadataQueueProgress.total+' · errores: '+metadataQueueProgress.failed:'');
+}
+
+function updateBookSelectionUI(){
+  const count=selectedBookIds.size,visible=[...document.querySelectorAll('#book-admin-rows [data-select-book]')];
+  const header=document.querySelector('#select-visible-books');
+  const selectedVisible=visible.filter(x=>x.checked).length;
+  if(header){header.checked=visible.length>0&&selectedVisible===visible.length;header.indeterminate=selectedVisible>0&&selectedVisible<visible.length}
+  const countLabel=document.querySelector('#bulk-selection-count');
+  if(countLabel)countLabel.textContent=count+' seleccionado(s)';
+  const canAct=count>0&&role==='admin'&&!metadataInProgress;
+  const analyze=document.querySelector('#analyze-selected-books'),remove=document.querySelector('#delete-selected-books'),clear=document.querySelector('#clear-book-selection');
+  if(analyze)analyze.disabled=!canAct;
+  if(remove)remove.disabled=!(count>0&&role==='admin');
+  if(clear)clear.disabled=count===0;
 }
 function bindBookManagement(){
   const search=document.querySelector('#book-admin-search'),status=document.querySelector('#book-admin-status'),body=document.querySelector('#book-admin-rows');
@@ -262,9 +278,31 @@ function bindBookManagement(){
     body?.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));
     body?.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));
     body?.querySelectorAll('[data-open]').forEach(x=>x.onclick=()=>openBook(x.dataset.open));
+    body?.querySelectorAll('[data-select-book]').forEach(x=>x.onchange=()=>{
+      if(x.checked)selectedBookIds.add(x.dataset.selectBook);else selectedBookIds.delete(x.dataset.selectBook);
+      updateBookSelectionUI();
+    });
   };
-  const refresh=()=>{if(body){body.innerHTML=bookManagementRows(search?.value||'',status?.value||'all');bindActions()}};
+  const refresh=()=>{if(body){body.innerHTML=bookManagementRows(search?.value||'',status?.value||'all');bindActions();updateBookSelectionUI()}};
   search?.addEventListener('input',refresh);status?.addEventListener('change',refresh);
+  document.querySelector('#select-visible-books')?.addEventListener('change',e=>{
+    body?.querySelectorAll('[data-select-book]').forEach(x=>{
+      x.checked=e.currentTarget.checked;
+      if(x.checked)selectedBookIds.add(x.dataset.selectBook);else selectedBookIds.delete(x.dataset.selectBook);
+    });
+    updateBookSelectionUI();
+  });
+  document.querySelector('#clear-book-selection')?.addEventListener('click',()=>{
+    selectedBookIds.clear();refresh();
+  });
+  document.querySelector('#analyze-selected-books')?.addEventListener('click',()=>{
+    const all=[...books,...pendingDocs],chosen=all.filter(x=>selectedBookIds.has(x.id));
+    const eligible=chosen.filter(x=>x.provider==='r2'&&x.uploadStatus==='stored'&&!x.metadataReviewed);
+    if(!eligible.length)return toast('No hay documentos seleccionados que puedan analizarse.');
+    if(eligible.length<chosen.length)toast((chosen.length-eligible.length)+' elemento(s) omitido(s): solo se analizan PDFs guardados y sin revisión manual.');
+    void runMetadataQueue(eligible.map(x=>x.id),null,true);
+  });
+  document.querySelector('#delete-selected-books')?.addEventListener('click',()=>void deleteSelectedDocuments([...selectedBookIds]));
   document.querySelector('#run-metadata')?.addEventListener('click',()=>runMetadataQueue());
   document.querySelector('#rebuild-metadata')?.addEventListener('click',()=>runMetadataQueue(null,null,true));
   const localRecoverButton=document.querySelector('#recover-local-filenames'),folderInput=document.querySelector('#filename-source-folder');
@@ -279,8 +317,9 @@ function bindBookManagement(){
       await loadUser(me);
     }catch(error){toast('No se pudo reconciliar R2: '+error.message);if(button)button.disabled=false}
   });
-  bindActions();
+  bindActions();updateBookSelectionUI();
 }
+
 async function reconcileStorageFromWorker(tokenOverride=null){
   const {data:{session}}=await db.auth.getSession(),token=tokenOverride||session?.access_token;
   if(!token)throw new Error('Sesión vencida.');
@@ -550,6 +589,40 @@ async function adminUsersAction(body){const {data,error}=await db.functions.invo
 function addUser(){const m=document.createElement('div');m.className='modal-bg';m.innerHTML='<section class="modal user-modal"><header><b>Crear usuario</b><button id="close" type="button">Cerrar</button></header><form id="new"><label>Nombre visible<input name="fullName" required maxlength="120"></label><label>Username opcional<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}"></label><label>Correo electrónico<input name="email" type="email" required></label><label>Contraseña temporal<input name="password" type="password" minlength="8" required></label><label>Rol<select name="role"><option value="reader">Lector</option><option value="editor">Editor</option><option value="admin">Administrador</option></select></label><button class="primary">Crear usuario</button></form></section>';document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.querySelector('#new').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.currentTarget));try{await adminUsersAction({action:'create',...body});toast('Usuario creado.');m.remove();await loadUser(me)}catch(error){toast('No se pudo crear: '+error.message)}}}
 function editUser(id){const u=users.find(x=>x.id===id);if(!u)return;const m=document.createElement('div');m.className='modal-bg';m.innerHTML='<section class="modal user-modal"><header><b>Editar usuario</b><button id="close" type="button">Cerrar</button></header><form id="edit"><label>Nombre visible<input name="fullName" maxlength="120" value="'+esc(u.name)+'" required></label><label>Username<input name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" value="'+esc(u.username||'')+'"></label><label>Rol<select name="role"><option value="reader" '+(u.role==='reader'?'selected':'')+'>Lector</option><option value="editor" '+(u.role==='editor'?'selected':'')+'>Editor</option><option value="admin" '+(u.role==='admin'?'selected':'')+'>Administrador</option></select></label><label>Estado<select name="status"><option value="active" '+(u.status==='active'?'selected':'')+'>Activo</option><option value="suspended" '+(u.status==='suspended'?'selected':'')+'>Suspendido</option></select></label><p class="muted">Correo: '+esc(u.email)+' · el usuario puede cambiarlo desde Mi cuenta.</p><button class="primary">Guardar cambios</button></form></section>';document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.querySelector('#edit').onsubmit=async e=>{e.preventDefault();const body=Object.fromEntries(new FormData(e.currentTarget));try{await adminUsersAction({action:'update',userId:id,...body});toast('Usuario actualizado.');m.remove();await loadUser(me)}catch(error){toast('No se pudo actualizar: '+error.message)}}}
 async function deleteUser(id){const u=users.find(x=>x.id===id);if(!u||id===me.id)return;if(!confirm('¿Eliminar la cuenta de '+(u.name||u.email)+'? Esta acción no se puede deshacer.'))return;try{await adminUsersAction({action:'delete',userId:id});toast('Usuario eliminado.');await loadUser(me)}catch(error){toast('No se pudo eliminar: '+error.message)}}
+
+async function deleteSelectedDocuments(ids){
+  if(role!=='admin')return;
+  const unique=[...new Set(ids)].filter(Boolean),all=[...books,...pendingDocs],targets=unique.map(id=>all.find(x=>x.id===id)).filter(Boolean);
+  if(!targets.length)return toast('No hay documentos seleccionados.');
+  const preview=targets.slice(0,4).map(x=>x.title).join(' · '),extra=targets.length>4?' y '+(targets.length-4)+' más':'';
+  if(!confirm('Vas a eliminar definitivamente '+targets.length+' documento(s) y sus archivos PDF privados.\\n\\n'+preview+extra+'\\n\\nEsta acción no se puede deshacer. ¿Continuar?'))return;
+  const{data:{session}}=await db.auth.getSession();
+  if(!session?.access_token)return login('Tu sesión expiró. Inicia sesión nuevamente.');
+  const button=document.querySelector('#delete-selected-books');if(button)button.disabled=true;
+  const base=(c.pdfGatewayUrl||'').replace(/\/+$/,''),token=session.access_token;
+  let cursor=0,deleted=0,failed=[];
+  const worker=async()=>{
+    while(true){
+      const index=cursor++;if(index>=targets.length)return;
+      const doc=targets[index];
+      try{
+        const response=await fetch(base+'/document/'+encodeURIComponent(doc.id),{method:'DELETE',headers:{Authorization:'Bearer '+token}});
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok)throw new Error(result.error||'No se pudo eliminar');
+        selectedBookIds.delete(doc.id);deleted++;
+        if(result.storageCleanupPending)failed.push(doc.title+' (requiere limpieza R2)');
+      }catch(error){failed.push(doc.title+' ('+(error?.message||'error')+')')}
+      if(button)button.textContent='Eliminando '+deleted+'/'+targets.length+'…';
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(3,targets.length)},worker));
+  if(button)button.textContent='Eliminar seleccionados';
+  const failedIds=new Set(failed.map(x=>x.split(' (')[0]));
+  for(const doc of targets)if(!failedIds.has(doc.title))selectedBookIds.delete(doc.id);
+  await loadUser(me);
+  toast('Eliminación terminada: '+deleted+'/'+targets.length+' documento(s).'+(failed.length?' No completados: '+failed.join('; ').slice(0,500):''));
+}
+
 async function deleteDocument(id){const d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!d||role!=='admin')return;if(!confirm('¿Eliminar definitivamente "'+d.title+'" y su PDF privado? Esta acción no se puede deshacer.'))return;const {data:{session}}=await db.auth.getSession();if(!session?.access_token)return login('Tu sesión expiró.');const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');try{const response=await fetch(base+'/document/'+encodeURIComponent(id),{method:'DELETE',headers:{Authorization:'Bearer '+session.access_token}});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.error||'No se pudo eliminar.');toast(result.storageCleanupPending?'Registro eliminado; el almacenamiento requiere limpieza manual.':'Documento y archivo eliminados.');await loadUser(me)}catch(error){toast('Error al eliminar: '+error.message)}}
 function metadataTextKey(value){return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim()}
 function metadataTitleClean(value){return String(value||'').replace(/\s+/g,' ').trim().replace(/\s*(?:p[aá]g(?:ina)?\.?\s*\d+|page\s+\d+)\s*$/i,'').trim()}
@@ -778,7 +851,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
  }finally{try{await task.destroy()}catch{}}
 }
 
-async function signOut(){if(live)await db.auth.signOut();me=null;books=[];pendingDocs=[];users=[];collections=[];selectedFiles=[];role='reader';page='home';query='';sortBy='title';sortDir='asc';viewMode='grid';density=3;filterCollection='';filterCategory='';favs.clear();history=[];bookAdminStatus='all';login()}
+async function signOut(){if(live)await db.auth.signOut();me=null;books=[];pendingDocs=[];users=[];collections=[];selectedFiles=[];role='reader';page='home';query='';sortBy='title';sortDir='asc';viewMode='grid';density=3;filterCollection='';filterCategory='';favs.clear();history=[];bookAdminStatus='all';selectedBookIds.clear();login()}
 async function startLibrary(){
   try{
     const {data:{session},error}=await db.auth.getSession();
