@@ -416,7 +416,7 @@ async function reconcileStorage(request, env, headers, auth) {
   } while (cursor);
 
   const candidates = objects.filter(object => validUploadKey(object.key));
-  const stats = { scanned: candidates.length, recovered: 0, completed: 0, filenamesRecovered: 0, filenamesUnavailable: 0, failed: 0, errors: [] };
+  const stats = { filenameRecoveryVersion: 1, scanned: candidates.length, recovered: 0, completed: 0, filenamesRecovered: 0, filenamesUnavailable: 0, failed: 0, errors: [] };
   let cursorIndex = 0;
   const worker = async () => {
     while (true) {
