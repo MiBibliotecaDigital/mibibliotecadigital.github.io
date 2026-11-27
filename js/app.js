@@ -15,7 +15,58 @@ function usersPage(){return '<div class="heading"><div><h1>Usuarios</h1><p>Admin
 function content(){if(page==='users'&&role==='admin')return usersPage();if(page==='settings')return '<div class="heading"><h1>Configuracion</h1></div><div class="panel"><h2>Supabase</h2><p>'+(live?'Autenticacion conectada.':'Modo demo; falta configurar credenciales.')+'</p><h2>Cloudflare R2</h2><p>Bucket privado biblioteca-digital-archivos. Falta configurar secretos y desplegar funciones.</p><h2>Seguridad</h2><p>No subir libros reales hasta completar la configuracion del backend.</p></div>';let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':page==='collections'?'Colecciones':'Tu biblioteca, a mano.';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu coleccion organizada en un solo lugar.</p></div><span class="tag">'+list.length+' documentos</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>3</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div>':'')+'<div class="chips"><button data-cat="all">Todos</button><button data-cat="Geografia imaginaria">Geografia</button><button data-cat="Naturaleza">Naturaleza</button><button data-cat="Musica">Musica</button></div><div class="grid">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'Los PDF son ficticios y publicos, solo para probar la interfaz.')+'</p>'}
 function render(){root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACION · sin autenticacion real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Resumen')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+(role==='admin'?'<small>GESTION</small>'+nav('users','♙ Usuarios')+nav('settings','⚙ Configuracion'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesion ↗</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar titulo, autor..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#search').oninput=e=>{query=e.target.value;let g=document.querySelector('.grid');if(g)g.innerHTML=filtered().map(card).join('');bindBooks()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';query=x.dataset.cat==='all'?'':x.dataset.cat;render()});document.querySelector('#add')?.addEventListener('click',addUser);bindBooks()}
 function bindBooks(){document.querySelectorAll('[data-open]').forEach(x=>x.onclick=()=>openBook(x.dataset.open));document.querySelectorAll('[data-fav]').forEach(x=>x.onclick=()=>{favs.has(x.dataset.fav)?favs.delete(x.dataset.fav):favs.add(x.dataset.fav);render()})}
-async function openBook(id){let b=books.find(x=>x.id===id);if(!b)return;let url=b.path;if(live&&b.provider==='r2'){let {data,error}=await db.functions.invoke('r2-document-url',{body:{documentId:id}});if(error||!data?.url)return toast(error?.message||'No se pudo abrir PDF');url=data.url}if(!url)return toast('Archivo aun no asociado');history.unshift(id);if(live)await db.from('reading_events').insert({document_id:id,user_id:me.id,event_type:'opened'});let m=document.createElement('div');m.className='modal-bg';m.innerHTML='<section class="modal"><header><b>'+esc(b.title)+'</b><button id="close">Cerrar ×</button></header>'+(b.provider==='demo'?'<div class="notice">PDF ficticio, publico y de demostracion.</div>':'')+'<iframe src="'+esc(url)+'"></iframe><a target="_blank" rel="noopener" href="'+esc(url)+'">Abrir / descargar PDF</a></section>';document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.onclick=e=>{if(e.target===m)m.remove()}}
+async function openBook(id){
+  const b=books.find(x=>x.id===id);if(!b)return;
+  history.unshift(id);
+  if(!live||b.provider==='demo'){
+    const url=b.path;
+    if(!url)return toast('Archivo aun no asociado');
+    const m=document.createElement('div');m.className='modal-bg';
+    m.innerHTML='<section class="modal"><header><b>'+esc(b.title)+'</b><button id="close">Cerrar ×</button></header><div class="notice">PDF ficticio de demostración; no contiene material privado.</div><iframe src="'+esc(url)+'" title="PDF de demostración"></iframe></section>';
+    document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.onclick=e=>{if(e.target===m)m.remove()};return;
+  }
+  if(b.provider!=='r2')return toast('Proveedor de documento no compatible');
+  if(!c.pdfGatewayUrl)return toast('Falta configurar la dirección del gateway PDF');
+  const {data:{session}}=await db.auth.getSession();
+  if(!session?.access_token)return login('Tu sesión expiró. Inicia sesión nuevamente.');
+  if(!me?.id)return login('Debes iniciar sesión para leer documentos.');
+  const m=document.createElement('div');m.className='modal-bg';
+  m.innerHTML='<section class="modal pdf-modal"><header><b>'+esc(b.title)+'</b><div class="pdf-tools"><button id="prev" disabled>Anterior</button><span id="page-label">Cargando…</span><button id="next" disabled>Siguiente</button><button id="zoom-out">−</button><button id="zoom-in">+</button><button id="close">Cerrar ×</button></div></header><div class="pdf-scroll"><canvas id="pdf-canvas"></canvas></div><p class="pdf-status" id="pdf-status">Verificando sesión y permisos…</p></section>';
+  document.body.append(m);
+  const close=()=>{try{loadingTask?.destroy()}catch{}m.remove()};
+  m.querySelector('#close').onclick=close;m.onclick=e=>{if(e.target===m)close()};
+  let pdf=null,pageNum=1,scale=1,loadingTask=null,renderTask=null;
+  const canvas=m.querySelector('#pdf-canvas'),ctx=canvas.getContext('2d'),status=m.querySelector('#pdf-status'),label=m.querySelector('#page-label');
+  const draw=async()=>{
+    if(!pdf)return;
+    if(renderTask){try{renderTask.cancel()}catch{}}
+    const p=await pdf.getPage(pageNum),viewport=p.getViewport({scale});
+    const dpr=window.devicePixelRatio||1;
+    canvas.width=Math.floor(viewport.width*dpr);canvas.height=Math.floor(viewport.height*dpr);
+    canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';
+    renderTask=p.render({canvasContext:ctx,viewport,transform:dpr!==1?[dpr,0,0,dpr,0,0]:null});
+    try{await renderTask.promise}catch(e){if(e?.name!=='RenderingCancelledException')throw e}
+    label.textContent=pageNum+' / '+pdf.numPages;
+    m.querySelector('#prev').disabled=pageNum<=1;m.querySelector('#next').disabled=pageNum>=pdf.numPages;
+    status.textContent='Documento protegido · sesión verificada';
+  };
+  m.querySelector('#prev').onclick=()=>{if(pageNum>1){pageNum--;draw().catch(e=>status.textContent=e.message)}};
+  m.querySelector('#next').onclick=()=>{if(pdf&&pageNum<pdf.numPages){pageNum++;draw().catch(e=>status.textContent=e.message)}};
+  m.querySelector('#zoom-in').onclick=()=>{scale=Math.min(3,scale+.2);draw().catch(e=>status.textContent=e.message)};
+  m.querySelector('#zoom-out').onclick=()=>{scale=Math.max(.5,scale-.2);draw().catch(e=>status.textContent=e.message)};
+  try{
+    const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+    const gateway=c.pdfGatewayUrl.replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);
+    loadingTask=pdfjs.getDocument({url:gateway,httpHeaders:{Authorization:'Bearer '+session.access_token},withCredentials:false,disableAutoFetch:false,disableStream:false,rangeChunkSize:65536});
+    pdf=await loadingTask.promise;
+    if(live)await db.from('reading_events').insert({document_id:id,user_id:me.id,event_type:'opened'});
+    await draw();
+  }catch(e){
+    console.error(e);status.textContent='No se pudo abrir el documento. '+(e?.message||'Verifica tu sesión y permisos.');
+    if(e?.status===401||e?.status===403)setTimeout(()=>{if(document.body.contains(m))login('Tu sesión expiró o no tienes permiso para este documento.')},900);
+  }
+}
 function addUser(){let m=document.createElement('div');m.className='modal-bg';m.innerHTML='<section class="modal"><header><b>Crear usuario</b><button id="close">Cerrar</button></header><form id="new"><label>Nombre<input name="fullName" required></label><label>Email<input name="email" type="email" required></label><label>Contrasena temporal<input name="password" type="password" minlength="8" required></label><label>Rol<select name="role"><option value="reader">Lector</option><option value="editor">Editor</option><option value="admin">Administrador</option></select></label><button class="primary">Crear</button></form></section>';document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.querySelector('#new').onsubmit=async e=>{e.preventDefault();let body=Object.fromEntries(new FormData(e.currentTarget));if(live){let {data,error}=await db.functions.invoke('admin-create-user',{body});if(error||!data?.email)return toast(error?.message||data?.error||'Error');toast('Usuario creado: '+data.email);m.remove();await loadUser(me)}else{users.push({name:body.fullName,email:body.email,role:body.role,status:'Demo temporal'});m.remove();render()}}}
 async function signOut(){if(live)await db.auth.signOut();me=null;books=[];users=[];role='reader';page='home';query='';favs.clear();history=[];login()}
 if(live){let {data:{session}}=await db.auth.getSession();if(session)await loadUser(session.user);else login();db.auth.onAuthStateChange((_e,s)=>{if(!s&&me)login()})}else login();
