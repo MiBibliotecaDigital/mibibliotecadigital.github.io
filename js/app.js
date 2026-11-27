@@ -487,8 +487,8 @@ function editDocumentMetadata(id){
   const isbnText=String(data.get('isbn')||'').trim(),validIsbn=isbnText?metadataValidIsbn(isbnText):null;
   if(isbnText&&!validIsbn)return toast('El ISBN ingresado no supera la validación de dígitos.');
   if(validIsbn)identifierList.push({type:'isbn',value:validIsbn,normalized:validIsbn,source:'manual',pages:[],occurrences:0,confidence:100});
-  const identifiers=metadataUniqueIdentifiers(identifierList);
-  const values={title,authors:String(data.get('authors')||'').split(',').map(x=>x.trim()).filter(Boolean),publication_year:year?Number(year):null,category:String(data.get('category')||'General').trim()||'General',description:String(data.get('description')||'').trim(),collection_id:String(data.get('collectionId')||'')||null,page_count:pages?Number(pages):null,isbn:validIsbn,publisher:String(data.get('publisher')||'').trim()||null,tags:String(data.get('tags')||'').split(',').map(x=>x.trim()).filter(Boolean),bibliographic_identifiers:identifiers,document_kind:kind,metadata_source:'manual',metadata_reviewed:true,metadata_status:'complete',metadata_error:null,metadata_match_status:['other','periodical','article'].includes(kind)?'non_book':'matched',metadata_confidence:100,metadata_candidate:null,metadata_checked_at:new Date().toISOString(),is_published:publish};
+  const identifiers=metadataUniqueIdentifiers(identifierList),savedIsbn=validIsbn||identifiers.find(x=>x.type==='isbn')?.value||null;
+  const values={title,authors:String(data.get('authors')||'').split(',').map(x=>x.trim()).filter(Boolean),publication_year:year?Number(year):null,category:String(data.get('category')||'General').trim()||'General',description:String(data.get('description')||'').trim(),collection_id:String(data.get('collectionId')||'')||null,page_count:pages?Number(pages):null,isbn:savedIsbn,publisher:String(data.get('publisher')||'').trim()||null,tags:String(data.get('tags')||'').split(',').map(x=>x.trim()).filter(Boolean),bibliographic_identifiers:identifiers,document_kind:kind,metadata_source:'manual',metadata_reviewed:true,metadata_status:'complete',metadata_error:null,metadata_match_status:['other','periodical','article'].includes(kind)?'non_book':'matched',metadata_confidence:100,metadata_candidate:null,metadata_checked_at:new Date().toISOString(),is_published:publish};
   if(!title)return toast('El título es obligatorio.');
   if(values.publication_year!==null&&(!Number.isInteger(values.publication_year)||values.publication_year<1000||values.publication_year>2100))return toast('Revisá el año.');
   if(values.page_count!==null&&(!Number.isInteger(values.page_count)||values.page_count<1||values.page_count>100000))return toast('Revisá las páginas.');
@@ -678,7 +678,7 @@ function metadataAuthorUsable(value){
 }
 function metadataValidIsbn(value){
   const v=String(value||'').replace(/[^0-9Xx]/g,'').toUpperCase();
-  if(v.length===13&&/^97[89](?!0)\d{10}$/.test(v)){
+  if(v.length===13&&/^(?:978\d{10}|979[1-9]\d{9})$/.test(v)){
     let sum=0;for(let i=0;i<12;i++)sum+=Number(v[i])*(i%2?3:1);
     return (10-sum%10)%10===Number(v[12])?v:null;
   }
@@ -754,11 +754,12 @@ function metadataExtractPublisherNumbers(pageLines){
         const normalized=metadataNormalizeIdentifier('publisher_number',raw),key=normalized;
         if(!found.has(key))found.set(key,{type:'publisher_number',value:raw,normalized,pages:new Set(),occurrences:0,source:'pdf_text',confidence:0});
         const record=found.get(key);record.pages.add(line.page);record.occurrences++;
+        if(pi===0)record.confidence=Math.max(record.confidence,72);
         if(pi===1)record.confidence=Math.max(record.confidence,80);
       }
     }
   }
-  return [...found.values()].filter(x=>x.pages.size>=2||x.confidence>=80).map(x=>({
+  return [...found.values()].filter(x=>x.pages.size>=2||x.confidence>=72).map(x=>({
     type:x.type,value:x.value,normalized:x.normalized,source:x.source,pages:[...x.pages].sort((a,b)=>a-b),
     occurrences:x.occurrences,confidence:x.pages.size>=3?96:x.pages.size>=2?88:x.confidence
   }));
@@ -901,6 +902,7 @@ function metadataRankCandidate(candidate,context){
   if(candidateIds.some(other=>other.type===id.type&&metadataNormalizeIdentifier(other.type,other.value)===metadataNormalizeIdentifier(id.type,id.value))){identifierMatch=id;break}
  }
  const isbnMatch=!!(context.isbn&&candidate.isbns?.some(x=>metadataValidIsbn(x)===context.isbn))||identifierMatch?.type==='isbn';
+ if(!identifierMatch&&isbnMatch)identifierMatch={type:'isbn',value:context.isbn,normalized:context.isbn};
  const authorMatch=metadataAuthorsMatch(context.authors,candidate.authors||[]);
  const specific=metadataTitleIsSpecific(context.title)&&metadataTitleIsSpecific(candidate.title);
  let score;
@@ -1023,7 +1025,7 @@ function metadataDetectDocumentKind(filename,text,catalogMatch,identifiers=[]){
  if(/\b(revista|magazine|journal|boletin|newsletter|periodical|issn)\b/.test(s))return'periodical';
  if(/\b(tesis|dissertation|tesina|trabajo final|doctoral thesis)\b/.test(s))return'academic';
  if(/\b(articulo|article|research paper|preprint|doi 10)\b/.test(s))return'article';
- if(/\b(partitura|sheet music|score|songbook|cancionero|coros mixtos|coro|piano|pianoforte|guitarra|guitarras|guitar|violin|viola|violoncello|violonchelo|flauta|flute|organ|organo|clarinete|clarinet|saxofon|saxophone|malambo|zamba|vidalita|chacarera|milonga|gymnopedie|clair de lune|nocturne|nocturno|preludio|prelude|sonata|suite|etude|estudio musical|vals|waltz|mazurka|polonaise)\b/.test(s))return'music_score';
+ if(/\b(partitura|sheet music|score|songbook|cancionero|coros mixtos|coro|piano|pianoforte|guitarra|guitarras|guitar|violin|viola|violoncello|violonchelo|flauta|flute|organ|organo|clarinete|clarinet|saxofon|saxophone|malambo|zamba|vidalita|chacarera|milonga|gymnopedie|claire de lune|clair de lune|nocturne|nocturno|preludio|prelude|sonata|suite|etude|estudio musical|vals|waltz|mazurka|polonaise)\b/.test(s))return'music_score';
  if(/\b(manual de usuario|user manual|instrucciones de uso|reglamento|guia de usuario)\b/.test(s))return'manual';
  if(/\b(diccionario|enciclopedia|atlas|catalogo)\b/.test(s))return'reference';
  if(catalogMatch&&catalogMatch.score>=92&&catalogMatch.printType==='BOOK')return'book';
@@ -1065,7 +1067,6 @@ function metadataBuildTags({filename='',text='',kind='unknown',catalog=null,acce
   [/\b(blues)\b/,'Blues']
  ];
  for(const [re,tag] of genres)if(re.test(s))add(tag);
- if(publisher)add(publisher);
  for(const id of identifiers||[])if(id.type==='publisher_number'&&/^BA\b/i.test(id.value))add('Bärenreiter');
  return out.slice(0,24);
 }
