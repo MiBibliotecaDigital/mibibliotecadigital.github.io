@@ -75,7 +75,9 @@ export default {
     if (!authorization) {
       // Direct navigation to a master document URL sends the visitor to the library.
       // PDF.js requests include Authorization and continue through the checks below.
-      headers.set("Location", appOrigin.replace(/\/+$/, "") + "/");
+      const loginUrl = new URL("/", appOrigin);
+      loginUrl.searchParams.set("open", documentId);
+      headers.set("Location", loginUrl.toString());
       headers.set("Cache-Control", "no-store");
       headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
       return new Response(null, { status: 302, headers });
