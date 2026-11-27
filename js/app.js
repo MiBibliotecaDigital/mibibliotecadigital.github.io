@@ -125,12 +125,12 @@ async function uploadOneFile(file,token,onProgress,fileFingerprint){
   };
   try{
     const start=await fetch(base+'/upload/start',{
-      method:'POST',headers:auth,
+      method:'POST',headers:{...auth,'X-File-Size':String(file.size)},
       body:JSON.stringify({fileSize:file.size,fileName:file.name.slice(0,255),fileFingerprint})
     });
     if(!start.ok)throw new Error((await start.text())||'No se pudo iniciar la carga.');
     upload=await start.json();
-    if(!upload?.key||!upload?.uploadId||!upload?.documentId||!Number(upload.partSize))
+    if(!upload?.key||!upload?.uploadId||!Number(upload.partSize))
       throw new Error('El servidor devolvió datos de carga incompletos.');
     const parts=[];let offset=0,partNumber=1;
     while(offset<file.size){
@@ -144,14 +144,15 @@ async function uploadOneFile(file,token,onProgress,fileFingerprint){
       parts.push(await response.json());offset=end;partNumber++;
       onProgress?.(Math.round(offset/file.size*100));
     }
-    const complete=await fetch(base+'/upload/complete',{
-      method:'POST',
-      headers:auth,
-      body:JSON.stringify({key:upload.key,uploadId:upload.uploadId,documentId:upload.documentId,parts,fileSize:file.size,fileName:file.name.slice(0,255),fileFingerprint})
-    });
+    const completionBody=upload.documentId
+      ?{key:upload.key,uploadId:upload.uploadId,documentId:upload.documentId,parts,fileSize:file.size,fileName:file.name.slice(0,255),fileFingerprint}
+      :{key:upload.key,uploadId:upload.uploadId,parts,fileSize:file.size,fileName:file.name.slice(0,255),fileFingerprint};
+    const complete=await fetch(base+'/upload/complete',{method:'POST',headers:auth,body:JSON.stringify(completionBody)});
     if(!complete.ok)throw new Error((await complete.text())||'No se pudo finalizar la carga.');
     const result=await complete.json();upload=null;
-    return {id:result.documentId||result.document?.id,title:file.name,catalogueSynced:result.catalogueSynced!==false};
+    const savedId=result.documentId||result.document?.id;
+    if(!savedId)throw new Error('La pasarela no confirmó el registro del PDF.');
+    return {id:savedId,title:file.name,catalogueSynced:result.catalogueSynced!==false};
   }catch(error){
     const recovered=await abort();
     if(recovered?.stored&&recovered?.documentId)
