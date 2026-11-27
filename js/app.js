@@ -653,7 +653,7 @@ function metadataAuthorUsable(value){
 }
 function metadataValidIsbn(value){
   const v=String(value||'').replace(/[^0-9Xx]/g,'').toUpperCase();
-  if(v.length===13&&/^\d{13}$/.test(v)){
+  if(v.length===13&&/^97[89](?!0)\d{10}$/.test(v)){
     let sum=0;for(let i=0;i<12;i++)sum+=Number(v[i])*(i%2?3:1);
     return (10-sum%10)%10===Number(v[12])?v:null;
   }
@@ -664,6 +664,152 @@ function metadataValidIsbn(value){
   }
   return null;
 }
+function metadataValidIsmn(value){
+  const raw=String(value||'').trim().toUpperCase();
+  const compact=raw.replace(/[^0-9]/g,'');
+  if(/^9790\d{9}$/.test(compact)){
+    let sum=0;for(let i=0;i<12;i++)sum+=Number(compact[i])*(i%2?3:1);
+    return (10-sum%10)%10===Number(compact[12])?compact:null;
+  }
+  if(/^M[- ]?\d{4}[- ]?\d{4}[- ]?[0-9X]$/.test(raw)){
+    return 'M-'+raw.replace(/^M[- ]?/,'').replace(/[- ]/g,'').replace(/^(.{4})(.{4})(.)$/,'$1-$2-$3');
+  }
+  return null;
+}
+function metadataValidIssn(value){
+  const v=String(value||'').replace(/[^0-9Xx]/g,'').toUpperCase();
+  if(!/^\d{7}[\dX]$/.test(v))return null;
+  let sum=0;for(let i=0;i<7;i++)sum+=Number(v[i])*(8-i);
+  const check=(11-sum%11)%11,expected=check===10?'X':String(check);
+  return expected===v[7]?v.slice(0,4)+'-'+v.slice(4):null;
+}
+function metadataNormalizeDoi(value){
+  return String(value||'').trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i,'').replace(/^doi\s*:\s*/i,'').replace(/[.,;:!?)\]}]+$/g,'').toLowerCase();
+}
+function metadataNormalizeIdentifier(type,value){
+  const raw=String(value||'').trim();
+  if(type==='isbn')return metadataValidIsbn(raw)||raw.replace(/[^0-9Xx]/g,'').toUpperCase();
+  if(type==='ismn')return metadataValidIsmn(raw)||raw.replace(/[^0-9A-Z]/g,'').toUpperCase();
+  if(type==='issn')return metadataValidIssn(raw)||raw.replace(/[^0-9Xx]/g,'').toUpperCase();
+  if(type==='doi')return metadataNormalizeDoi(raw);
+  if(type==='publisher_number')return raw.toUpperCase().replace(/\s+/g,' ').replace(/\s*([-./])\s*/g,'$1').trim();
+  if(type==='iswc')return raw.toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(type==='oclc')return raw.replace(/[^0-9]/g,'');
+  return raw;
+}
+function metadataIdentifierLabel(type){
+  return({isbn:'ISBN',issn:'ISSN',doi:'DOI',ismn:'ISMN',iswc:'ISWC',isrc:'ISRC',oclc:'OCLC',publisher_number:'Número editorial / de plancha'})[type]||String(type||'Identificador');
+}
+function metadataUniqueIdentifiers(items){
+  const map=new Map();
+  for(const item of items||[]){
+    if(!item?.type||!item?.value)continue;
+    const type=String(item.type),value=String(item.value).trim(),normalized=item.normalized||metadataNormalizeIdentifier(type,value);
+    if(!normalized)continue;
+    const key=type+':'+normalized,old=map.get(key);
+    if(old){
+      old.pages=[...new Set([...(old.pages||[]),...(item.pages||[])])].sort((a,b)=>a-b);
+      old.occurrences=Math.max(old.occurrences||0,item.occurrences||0);
+      if(item.confidence)old.confidence=Math.max(old.confidence||0,item.confidence);
+    }else map.set(key,{type,value,normalized,source:item.source||'pdf_text',pages:[...(item.pages||[])],occurrences:item.occurrences||0,confidence:item.confidence||null});
+  }
+  return [...map.values()];
+}
+function metadataExtractPublisherNumbers(pageLines){
+  const found=new Map();
+  const patterns=[
+    /\bBA\s*[-.]?\s*\d{4,7}(?:[-.]\d{2,3})?\b/gi,
+    /\b(?:Bestell[- ]?(?:Nr\.?|Nummer)|Verlags[- ]?(?:Nr\.?|Nummer)|Publisher(?:'s)?\s*(?:No\.?|Number)|Plate\s*(?:No\.?|Number)|Plattennummer|Número\s+de\s+plancha|Cat(?:alogue|alog)?\s*(?:No\.?|Number))\s*[:#-]?\s*([A-Z]{1,5}\s*[-.]?\s*\d{3,8}(?:[-.]\d{2,3})?)/gi
+  ];
+  for(const line of pageLines||[]){
+    for(let pi=0;pi<patterns.length;pi++){
+      const re=new RegExp(patterns[pi].source,patterns[pi].flags);let m;
+      while((m=re.exec(line.text||''))){
+        const raw=(pi===0?m[0]:m[1]).replace(/\s+/g,' ').trim().toUpperCase();
+        const normalized=metadataNormalizeIdentifier('publisher_number',raw),key=normalized;
+        if(!found.has(key))found.set(key,{type:'publisher_number',value:raw,normalized,pages:new Set(),occurrences:0,source:'pdf_text',confidence:0});
+        const record=found.get(key);record.pages.add(line.page);record.occurrences++;
+        if(pi===1)record.confidence=Math.max(record.confidence,80);
+      }
+    }
+  }
+  return [...found.values()].filter(x=>x.pages.size>=2||x.confidence>=80).map(x=>({
+    type:x.type,value:x.value,normalized:x.normalized,source:x.source,pages:[...x.pages].sort((a,b)=>a-b),
+    occurrences:x.occurrences,confidence:x.pages.size>=3?96:x.pages.size>=2?88:x.confidence
+  }));
+}
+function metadataExtractIdentifiers(text,pageLines=[]){
+  const source=String(text||''),found=[];
+  const add=(type,value)=>{
+    const normalized=metadataNormalizeIdentifier(type,value);if(!normalized)return;
+    const needle=String(value).replace(/[^0-9A-Za-z]/g,'').toUpperCase();
+    const pages=[...new Set((pageLines||[]).filter(line=>String(line.text||'').replace(/[^0-9A-Za-z]/g,'').toUpperCase().includes(needle)).map(line=>line.page))];
+    found.push({type,value:String(value).trim(),normalized,source:'pdf_text',pages,occurrences:pages.length,confidence:pages.length>=2?92:75});
+  };
+  let m;
+  const issnRe=/\bISSN(?:-L)?\s*[:#]?\s*([0-9Xx][0-9Xx\s-]{7,14})/ig;
+  while((m=issnRe.exec(source))){const v=metadataValidIssn(m[1]);if(v)add('issn',v)}
+  const doiRe=/(?:\bdoi\s*:\s*|https?:\/\/(?:dx\.)?doi\.org\/)?(10\.\d{4,9}\/[0-9A-Z._;()/:+-]+)/ig;
+  while((m=doiRe.exec(source))){const v=metadataNormalizeDoi(m[1]);if(v)add('doi',v)}
+  const ismnLabeled=/\bISMN\s*[:#-]?\s*(M[- ]?\d{4}[- ]?\d{4}[- ]?[0-9Xx]|979[- ]?0(?:[- ]?\d){9})/ig;
+  while((m=ismnLabeled.exec(source))){const v=metadataValidIsmn(m[1]);if(v)add('ismn',v)}
+  for(const raw of source.match(/\b979[ -]?0(?:[ -]?\d){9}\b/g)||[]){const v=metadataValidIsmn(raw);if(v)add('ismn',v)}
+  const iswcRe=/\bISWC\s*[:#-]?\s*(T[- ]?\d{3}[. -]?\d{3}[. -]?\d{3}[-. ]?\d)\b/ig;
+  while((m=iswcRe.exec(source)))add('iswc',m[1]);
+  const oclcRe=/\bOCLC(?:\s*(?:No\.?|number))?\s*[:#]?\s*(\d{5,12})\b/ig;
+  while((m=oclcRe.exec(source)))add('oclc',m[1]);
+  const isbnRe=/\bISBN(?:-1[03])?\s*[:#-]?\s*([0-9Xx][0-9Xx\s-]{8,24})/ig;
+  while((m=isbnRe.exec(source))){const v=metadataValidIsbn(m[1]);if(v)add('isbn',v)}
+  for(const item of source.match(/\b(?:97[89](?:[\s-]?\d){10}|(?:\d[\s-]?){9}[\dXx])\b/g)||[]){const v=metadataValidIsbn(item);if(v)add('isbn',v)}
+  return metadataUniqueIdentifiers([...found,...metadataExtractPublisherNumbers(pageLines)]);
+}
+function metadataExtractRepeatedLines(pageLines){
+  const map=new Map();
+  for(const line of pageLines||[]){
+    const value=String(line.text||'').replace(/\s+/g,' ').trim(),key=metadataTextKey(value);
+    if(value.length<8||value.length>180||!key||/^\d+$/.test(key))continue;
+    if(!map.has(key))map.set(key,{text:value,pages:new Set()});
+    map.get(key).pages.add(line.page);
+  }
+  return [...map.values()].filter(x=>x.pages.size>=2)
+    .sort((a,b)=>b.pages.size-a.pages.size||b.text.length-a.text.length)
+    .slice(0,16).map(x=>({text:x.text,pages:[...x.pages].sort((a,b)=>a-b),pageCount:x.pages.size}));
+}
+function metadataSamplePages(total,maxPages=18){
+  const count=Math.max(0,Number(total)||0);if(!count)return[];
+  if(count<=maxPages)return Array.from({length:count},(_,i)=>i+1);
+  const pages=new Set();for(let p=1;p<=Math.min(8,count);p++)pages.add(p);
+  const extra=maxPages-pages.size;
+  for(let i=0;i<extra;i++)pages.add(Math.min(count,9+Math.round(i*(count-9)/Math.max(1,extra-1))));
+  return [...pages].sort((a,b)=>a-b).slice(0,maxPages);
+}
+function metadataParseIdentifierInput(value){
+  const output=[];
+  for(const line of String(value||'').split(/[\n;]+/).map(x=>x.trim()).filter(Boolean)){
+    let type='',raw='';
+    const labelled=line.match(/^([^:=]+)\s*[:=]\s*(.+)$/);
+    if(labelled){const label=metadataTextKey(labelled[1]);raw=labelled[2].trim();
+      if(label==='isbn'||label==='isbn 10'||label==='isbn 13')type='isbn';
+      else if(label.startsWith('issn'))type='issn';
+      else if(label==='doi')type='doi';
+      else if(label==='ismn')type='ismn';
+      else if(label==='iswc')type='iswc';
+      else if(label==='oclc')type='oclc';
+      else type='publisher_number';
+    }else if(/^BA\s*[-.]?\s*\d{4,7}/i.test(line)){type='publisher_number';raw=line}
+    else continue;
+    const normalized=metadataNormalizeIdentifier(type,raw);
+    if(normalized&&raw)output.push({type,value:raw,normalized,source:'manual',pages:[],occurrences:0,confidence:100});
+  }
+  return metadataUniqueIdentifiers(output);
+}
+function metadataFormatIdentifiers(items){
+  return (items||[]).map(x=>metadataIdentifierLabel(x.type)+': '+String(x.value||'')).join('\n');
+}
+function metadataExtractIsbn(text){
+  return metadataExtractIdentifiers(text,[]).find(x=>x.type==='isbn')?.value||null;
+}
+function metadataExtractYear(text){const m=String(text||'').match(/(?:edici[oó]n(?:\s+(?:de|del|año))?|publicad[oa]|publicaci[oó]n|impres[oa]|printed|published|primera edici[oó]n)\D{0,35}((?:18|19|20)\d{2})/i);return m?Number(m[1]):null}
 function metadataPageLines(items,pageNumber){
   const entries=(items||[]).filter(x=>String(x.str||'').trim()).map(x=>{
     const tr=x.transform||[],font=Math.max(1,Number(x.height)||Math.hypot(Number(tr[2])||0,Number(tr[3])||0)||1);
@@ -680,6 +826,10 @@ function metadataPageLines(items,pageNumber){
     return {text,page:pageNumber,y:g.y,font:Math.max(...parts.map(x=>x.font))};
   }).filter(x=>x.text.length>1);
 }
+function metadataTitleIsSpecific(value){
+  const words=metadataTextKey(value).split(' ').filter(x=>x.length>1);
+  return words.length>=2&&words.some(x=>x.length>=3);
+}
 function metadataTitleSimilarity(a,b){
   const aa=metadataTextKey(a).split(' ').filter(x=>x.length>1),bb=metadataTextKey(b).split(' ').filter(x=>x.length>1);
   if(!aa.length||!bb.length)return 0;
@@ -693,42 +843,65 @@ async function openLibraryFetch(url){
     const wait=Math.max(0,1000-(Date.now()-openLibraryLastRequest));
     if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
     openLibraryLastRequest=Date.now();
-    return fetch(url,{signal:AbortSignal.timeout(8000)});
+    return fetch(url,{signal:AbortSignal.timeout(9000)});
   });
   openLibraryRequestChain=request.catch(()=>null);
   return request;
 }
 
 function metadataParseFilename(filename){
- const raw=metadataTitleClean(String(filename||'').split(/[\\/]/).pop()||'');let title=raw,authors=[];
+ const raw=metadataTitleClean(String(filename||'').split(/[\\/]/).pop()||'').replace(/\.pdf$/i,'').replace(/[_]+/g,' ').replace(/\s+/g,' ').trim(),title=raw;let authors=[];
  const by=raw.match(/^(.+?)\s+(?:por|by)\s+(.+)$/i);
- if(by&&metadataTitleUsable(by[1])){title=metadataTitleClean(by[1]);if(metadataNameLike(by[2]))authors=[metadataAuthorClean(by[2])]}
- else{const parts=raw.split(/\s+(?:[-–—|])\s+/).map(metadataTitleClean).filter(Boolean);if(parts.length===2){const l=metadataNameLike(parts[0]),r=metadataNameLike(parts[1]);if(r&&!l){title=parts[0];authors=[metadataAuthorClean(parts[1])]}else if(l&&!r){title=parts[1];authors=[metadataAuthorClean(parts[0])]}}}
- return{raw,title:metadataTitleUsable(title)?title:raw,authors:authors.filter(metadataAuthorUsable)};
+ if(by&&metadataTitleUsable(by[1])){if(metadataNameLike(by[2]))authors=[metadataAuthorClean(by[2])];return{raw,title:metadataTitleClean(by[1]),authors:authors.filter(metadataAuthorUsable)}}
+ const parts=raw.split(/\s+(?:[-–—|])\s+/).map(metadataTitleClean).filter(Boolean);
+ if(parts.length===2){const l=metadataNameLike(parts[0]),r=metadataNameLike(parts[1]);if(r&&!l){authors=[metadataAuthorClean(parts[1])];return{raw,title:parts[0],authors:authors.filter(metadataAuthorUsable)}}if(l&&!r){authors=[metadataAuthorClean(parts[0])];return{raw,title:parts[1],authors:authors.filter(metadataAuthorUsable)}}}
+ return{raw,title:metadataTitleUsable(title)?title:raw,authors:[]};
 }
-function metadataExtractIsbn(text){
- const source=String(text||''),re=/ISBN(?:-1[03])?\s*[:\-]?\s*([0-9Xx][0-9Xx\s-]{8,24})/ig;let m;
- while((m=re.exec(source))){const value=metadataValidIsbn(m[1]);if(value)return value}
- for(const item of source.match(/(?:97[89](?:[\s-]?\d){10}|(?:\d[\s-]?){9}[\dXx])/g)||[]){const value=metadataValidIsbn(item);if(value)return value}
- return null;
-}
-function metadataExtractYear(text){const m=String(text||'').match(/(?:edici[oó]n(?:\s+(?:de|del|año))?|publicad[oa]|publicaci[oó]n|impres[oa]|printed|published|primera edici[oó]n)\D{0,35}((?:18|19|20)\d{2})/i);return m?Number(m[1]):null}
 function metadataAuthorsMatch(expected,found){
  if(!expected?.length||!found?.length)return false;
- const a=expected.map(x=>metadataTextKey(x)).filter(Boolean),b=found.map(x=>metadataTextKey(x)).filter(Boolean);
- return a.some(x=>b.some(y=>x===y||(x.split(' ').slice(-1)[0]===y.split(' ').slice(-1)[0]&&x.split(' ').slice(-1)[0].length>3)));
+ const norm=values=>values.map(x=>metadataTextKey(x)).filter(Boolean);
+ const a=norm(expected),b=norm(found);
+ return a.some(x=>b.some(y=>x===y||(x.split(' ').length>=2&&y.split(' ').length>=2&&x.split(' ').slice(-1)[0]===y.split(' ').slice(-1)[0]&&x.split(' ').slice(-1)[0].length>3)));
 }
+
 function metadataCleanDescription(v){return String(v||'').replace(/<[^>]*>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g,' ').trim().slice(0,3000)}
-function metadataRankCandidate(candidate,context){
- const titleScore=metadataTitleSimilarity(context.title,candidate.title),isbnMatch=!!(context.isbn&&candidate.isbns?.includes(context.isbn)),authorMatch=metadataAuthorsMatch(context.authors,candidate.authors||[]);
- let score=isbnMatch?(titleScore>=.5?100:76):Math.round(titleScore*68+(context.authors?.length?(authorMatch?27:0):8)+(context.publisher&&candidate.publisher&&metadataTextKey(context.publisher)===metadataTextKey(candidate.publisher)?3:0)+(context.year&&candidate.year===context.year?2:0));
- if(!isbnMatch&&context.authors?.length&&!authorMatch)score=Math.min(score,79);
- return{...candidate,score,titleSimilarity:Number(titleScore.toFixed(3)),authorMatch,isbnMatch};
+function metadataCandidateIdentifiers(candidate){
+ if(Array.isArray(candidate.identifiers))return candidate.identifiers;
+ return (candidate.isbns||[]).map(value=>({type:'isbn',value,normalized:metadataNormalizeIdentifier('isbn',value)}));
 }
+function metadataRankCandidate(candidate,context){
+ const titleScore=metadataTitleSimilarity(context.title,candidate.title),candidateIds=metadataCandidateIdentifiers(candidate),contextIds=context.identifiers||[];
+ let identifierMatch=null;
+ for(const id of contextIds){
+  if(candidateIds.some(other=>other.type===id.type&&metadataNormalizeIdentifier(other.type,other.value)===metadataNormalizeIdentifier(id.type,id.value))){identifierMatch=id;break}
+ }
+ const isbnMatch=!!(context.isbn&&candidate.isbns?.some(x=>metadataValidIsbn(x)===context.isbn))||identifierMatch?.type==='isbn';
+ const authorMatch=metadataAuthorsMatch(context.authors,candidate.authors||[]);
+ const specific=metadataTitleIsSpecific(context.title)&&metadataTitleIsSpecific(candidate.title);
+ let score;
+ if(identifierMatch){
+  const compatible=!metadataTitleIsSpecific(context.title)||titleScore>=.35;
+  score=compatible?(titleScore>=.6?100:92):38;
+ }else{
+  score=specific?Math.round(titleScore*66+(context.authors?.length?(authorMatch?28:0):8)+(context.publisher&&candidate.publisher&&metadataTextKey(context.publisher)===metadataTextKey(candidate.publisher)?4:0)+(context.year&&candidate.year===context.year?2:0)):Math.round(titleScore*50);
+  if(context.authors?.length&&!authorMatch)score=Math.min(score,74);
+  if(!context.authors?.length)score=Math.min(score,78);
+  if(!specific)score=Math.min(score,65);
+ }
+ return{...candidate,score,titleSimilarity:Number(titleScore.toFixed(3)),authorMatch,isbnMatch,identifierMatch:identifierMatch||null,identifierType:identifierMatch?.type||null};
+}
+function metadataCandidateAccepted(candidate){
+ return !!candidate&&candidate.score>=92&&(
+  (!!candidate.identifierMatch&&candidate.score>=92)||
+  (candidate.titleSimilarity>=.88&&candidate.authorMatch&&metadataTitleIsSpecific(candidate.title))
+ );
+}
+
 function metadataCandidateFromGoogle(item){
  const v=item?.volumeInfo||{},ids=(v.industryIdentifiers||[]).map(x=>metadataValidIsbn(x.identifier)).filter(Boolean),date=String(v.publishedDate||'').match(/(?:18|19|20)\d{2}/);
- return{title:metadataTitleClean(v.title||''),authors:(v.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:[...new Set(ids)],publisher:String(v.publisher||''),year:date?Number(date[0]):null,description:metadataCleanDescription(v.description),tags:(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean).slice(0,30),pageCount:v.pageCount||null,source:'Google Books',printType:String(v.printType||'').toUpperCase(),sourceId:item?.id||null};
+ return{title:metadataTitleClean(v.title||''),authors:(v.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:[...new Set(ids)],identifiers:[...new Set(ids)].map(value=>({type:'isbn',value,normalized:value})),publisher:String(v.publisher||''),year:date?Number(date[0]):null,description:metadataCleanDescription(v.description),tags:(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean).slice(0,30),pageCount:v.pageCount||null,source:'Google Books',printType:String(v.printType||'').toUpperCase(),sourceId:item?.id||null};
 }
+
 async function googleBooksSearch(context){
  const p=new URLSearchParams({maxResults:'10',printType:'books',projection:'full'});
  if(context.isbn)p.set('q','isbn:'+context.isbn);else{const terms=['intitle:"'+String(context.title||'').replace(/["<>]/g,' ').slice(0,150)+'"'];if(context.authors?.[0])terms.push('inauthor:"'+String(context.authors[0]).replace(/["<>]/g,' ').slice(0,80)+'"');p.set('q',terms.join(' '))}
@@ -738,8 +911,76 @@ async function openLibrarySearch(context){
  const p=new URLSearchParams({fields:'key,title,author_name,first_publish_year,isbn,publisher,subject,number_of_pages_median',limit:'10'});
  if(context.isbn)p.set('isbn',context.isbn);else{p.set('title',context.title);if(context.authors?.[0])p.set('author',context.authors[0])}
  const r=await openLibraryFetch('https://openlibrary.org/search.json?'+p);if(!r.ok)throw new Error('Open Library HTTP '+r.status);const data=await r.json();
- return(data.docs||[]).map(x=>({title:metadataTitleClean(x.title||''),authors:(x.author_name||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:(x.isbn||[]).map(metadataValidIsbn).filter(Boolean),publisher:(x.publisher||[])[0]||'',year:Number(x.first_publish_year)||null,description:'',tags:(x.subject||[]).slice(0,30),pageCount:x.number_of_pages_median||null,source:'Open Library',printType:'BOOK',sourceId:x.key||null})).filter(x=>metadataTitleUsable(x.title));
+ return(data.docs||[]).map(x=>{const isbns=(x.isbn||[]).map(metadataValidIsbn).filter(Boolean);return{title:metadataTitleClean(x.title||''),authors:(x.author_name||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns,publisher:(x.publisher||[])[0]||'',year:Number(x.first_publish_year)||null,description:'',tags:(x.subject||[]).slice(0,30),pageCount:x.number_of_pages_median||null,source:'Open Library',printType:'BOOK',sourceId:x.key||null,identifiers:isbns.map(value=>({type:'isbn',value,normalized:value}))}}).filter(x=>metadataTitleUsable(x.title));
 }
+async function crossrefLookupIdentifier(identifier){
+ const type=identifier?.type,value=String(identifier?.value||'');
+ if(type!=='doi'&&type!=='issn')return[];
+ const url=type==='doi'?'https://api.crossref.org/works/'+encodeURIComponent(metadataNormalizeDoi(value)):'https://api.crossref.org/journals/'+encodeURIComponent(value.replace(/[^0-9Xx]/g,''));
+ const response=await fetch(url,{signal:AbortSignal.timeout(9000)});
+ if(!response.ok)throw new Error('Crossref HTTP '+response.status);
+ const payload=await response.json(),m=payload?.message;if(!m)return[];
+ if(type==='issn'){
+  const title=metadataTitleClean(m.title||'');if(!metadataTitleUsable(title))return[];
+  return[{title,authors:[],isbns:[],identifiers:[{type:'issn',value,normalized:metadataNormalizeIdentifier('issn',value)}],publisher:String(m.publisher||''),year:null,description:'',tags:['Publicaciones periódicas'],pageCount:null,source:'Crossref · ISSN',printType:'JOURNAL',documentKind:'periodical',sourceId:value}];
+ }
+ const title=metadataTitleClean((m.title||[])[0]||'');if(!metadataTitleUsable(title))return[];
+ const authors=(m.author||[]).map(a=>[a.given,a.family].filter(Boolean).join(' ')).filter(metadataAuthorUsable);
+ const date=m['published-print']?.['date-parts']?.[0]||m['published-online']?.['date-parts']?.[0]||m.created?.['date-parts']?.[0]||[];
+ const identifiers=[{type:'doi',value,normalized:metadataNormalizeDoi(value)},...(m.ISSN||[]).map(x=>({type:'issn',value:x,normalized:metadataNormalizeIdentifier('issn',x)}))];
+ return[{title,authors,isbns:(m.ISBN||[]).map(metadataValidIsbn).filter(Boolean),identifiers,publisher:String(m.publisher||''),year:Number(date[0])||null,description:metadataCleanDescription(m.abstract||''),tags:(m.subject||[]).slice(0,30),pageCount:null,source:'Crossref · DOI',printType:String(m.type||'').toUpperCase(),documentKind:m.type==='journal-article'?'article':m.type==='book'?'book':'unknown',sourceId:m.DOI||value}];
+}
+async function locLookupIdentifier(identifier){
+ if(identifier?.type!=='ismn')return[];
+ const url='https://www.loc.gov/search/?q='+encodeURIComponent('"'+identifier.value+'"')+'&fo=json&c=8';
+ const response=await fetch(url,{signal:AbortSignal.timeout(9000)});if(!response.ok)throw new Error('Library of Congress HTTP '+response.status);
+ const data=await response.json(),results=data.results||[],needle=String(identifier.normalized||identifier.value).replace(/[^0-9A-Z]/gi,'').toUpperCase();
+ return results.filter(item=>JSON.stringify(item).replace(/[^0-9A-Z]/gi,'').toUpperCase().includes(needle)).map(item=>{
+  const title=metadataTitleClean(item.title||'');
+  const contributor=Array.isArray(item.contributor)?item.contributor:[item.contributor].filter(Boolean);
+  const year=(String(item.date||'').match(/(?:18|19|20)\d{2}/)||[])[0];
+  return{title,authors:contributor.map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:[],identifiers:[identifier],publisher:String(item.publisher||''),year:Number(year)||null,description:metadataCleanDescription(item.description||''),tags:(item.subject||[]).flatMap(x=>String(x).split(/[;|]/)).map(x=>x.trim()).filter(Boolean),pageCount:null,source:'Library of Congress · ISMN',printType:'MUSIC',documentKind:'music_score',sourceId:item.id||item.url||null};
+ }).filter(x=>metadataTitleUsable(x.title));
+}
+async function imslpLookupPublisherNumber(identifier){
+ if(identifier?.type!=='publisher_number'||!/^BA\s*\d/i.test(identifier.value))return[];
+ const params=new URLSearchParams({action:'query',list:'search',srsearch:'"'+identifier.value+'"',srnamespace:'0',srlimit:'8',format:'json',origin:'*'});
+ const response=await fetch('https://imslp.org/api.php?'+params,{signal:AbortSignal.timeout(9000)});
+ if(!response.ok)throw new Error('IMSLP HTTP '+response.status);
+ const data=await response.json(),results=data?.query?.search||[],needle=String(identifier.normalized||identifier.value).replace(/[^0-9A-Z]/gi,'').toUpperCase();
+ return results.filter(x=>(String(x.title||'')+' '+String(x.snippet||'')).replace(/<[^>]*>/g,'').replace(/[^0-9A-Z]/gi,'').toUpperCase().includes(needle)).map(item=>{
+  const raw=String(item.title||'').replace(/_/g,' '),m=raw.match(/^(.+?)\s*\(([^()]*)\)$/),title=metadataTitleClean(m?m[1]:raw),authorRaw=m?m[2].replace(/,/g,' '):'';
+  return{title,authors:authorRaw?[metadataAuthorClean(authorRaw)]:[],isbns:[],identifiers:[identifier],publisher:'Bärenreiter',year:null,description:metadataCleanDescription(String(item.snippet||'').replace(/<[^>]*>/g,' ')),tags:['Música','Partituras'],pageCount:null,source:'IMSLP · número editorial',printType:'MUSIC',documentKind:'music_score',sourceId:item.title};
+ }).filter(x=>metadataTitleUsable(x.title));
+}
+async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind='unknown'){
+ let best=null;
+ const scoreCandidates=(candidates,context)=>{
+  const ranked=(candidates||[]).map(x=>metadataRankCandidate(x,{...context,identifiers})).sort((a,b)=>b.score-a.score);
+  if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];
+ };
+ for(const identifier of identifiers){
+  try{
+   let candidates=[];
+   if(identifier.type==='doi'||identifier.type==='issn')candidates=await crossrefLookupIdentifier(identifier);
+   else if(identifier.type==='ismn')candidates=await locLookupIdentifier(identifier);
+   else if(identifier.type==='publisher_number')candidates=await imslpLookupPublisherNumber(identifier);
+   for(const context of contexts.length?contexts:[{title:'',authors:[]}])scoreCandidates(candidates,context);
+   if(best&&metadataCandidateAccepted(best))return best;
+  }catch(error){console.info('Identifier lookup unavailable ('+identifier.type+'):',error?.message||error)}
+ }
+ if(['music_score','periodical','article'].includes(documentKind))return best;
+ for(const context of contexts){
+  if(!context.title&&!context.isbn)continue;
+  try{scoreCandidates(await googleBooksSearch(context),context);if(best&&metadataCandidateAccepted(best))return best}catch(e){console.info('Google Books lookup unavailable:',e?.message||e)}
+ }
+ for(const context of contexts){
+  if(!context.title&&!context.isbn)continue;
+  try{scoreCandidates(await openLibrarySearch(context),context);if(best&&metadataCandidateAccepted(best))return best}catch(e){console.info('Open Library lookup unavailable:',e?.message||e)}
+ }
+ return best;
+}
+
 async function lookupBibliographicCandidate(contexts){
  let best=null;
  for(const context of contexts){if(!context.title&&!context.isbn)continue;try{const ranked=(await googleBooksSearch(context)).map(x=>metadataRankCandidate(x,context)).sort((a,b)=>b.score-a.score);if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];if(best?.score>=90&&(best.isbnMatch||best.titleSimilarity>=.88&&best.authorMatch))return best}catch(e){console.info('Google Books lookup unavailable:',e?.message||e)}}
