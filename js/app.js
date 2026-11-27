@@ -1610,7 +1610,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
    updates.publisher=String(external.publisher||'').slice(0,200)||null;
    updates.publication_year=external.year||null;
    updates.description=String(external.description||'');
-   const tags=metadataBuildTags({filename:'',text:'',kind:'music_score',catalog:external,accepted:true,embeddedTags:[],publisher:external.publisher||'',identifiers:persistedIdentifiers});
+   const tags=metadataBuildTags({filename:'',text:'',kind:finalKind,catalog:external,accepted:true,embeddedTags:[],publisher:external.publisher||'',identifiers:persistedIdentifiers});
    updates.tags=tags;
    updates.category=metadataCategoryFromTags(tags,'music_score');
    updates.bibliographic_identifiers=persistedIdentifiers;
