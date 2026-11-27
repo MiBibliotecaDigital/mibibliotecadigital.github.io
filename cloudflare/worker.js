@@ -598,6 +598,7 @@ export default {
     }
 
     const pathname = new URL(request.url).pathname;
+    if (pathname === "/catalog/isbnlab" && request.method === "GET") return lookupIsbnLabBook(request, env, headers);
     if (pathname === "/catalog/melos" && request.method === "GET") return lookupMelosProduct(request, env, headers);
     if (pathname === "/upload/start" && request.method === "POST") return uploadStart(request, env, headers);
     if (pathname === "/upload/part" && request.method === "PUT") return uploadPart(request, env, headers);
@@ -763,6 +764,80 @@ function melosExtractProduct(html, productUrl, expectedCode) {
     attributes,
     url: productUrl
   };
+}
+
+async function lookupIsbnLabBook(request, env, headers) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  const url = new URL(request.url);
+  const isbn = String(url.searchParams.get("isbn") || "").replace(/[\s-]/g, "").toUpperCase();
+  if (!/^(?:\d{9}[\dX]|\d{13})$/.test(isbn)) {
+    return jsonReply({ error: "A valid ISBN-10 or ISBN-13 is required.", code: "invalid_isbn" }, 400, headers);
+  }
+  if (!env.ISBNLAB_API_TOKEN) {
+    return jsonReply({
+      error: "ISBNLab is not configured. Add the ISBNLAB_API_TOKEN Worker secret.",
+      code: "isbnlab_not_configured"
+    }, 503, headers);
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch("https://www.isbnlab.com/api/book/isbn/" + encodeURIComponent(isbn), {
+      headers: {
+        Accept: "application/json",
+        Authorization: "Bearer " + env.ISBNLAB_API_TOKEN,
+        "User-Agent": "MiBibliotecaDigital/1.0 (+https://mibibliotecadigital.github.io/)"
+      },
+      signal: AbortSignal.timeout(12000)
+    });
+  } catch (error) {
+    console.error("ISBNLab request failed", error);
+    return jsonReply({
+      error: "ISBNLab request failed.",
+      code: "isbnlab_unavailable",
+      detail: String(error?.message || error).slice(0, 240)
+    }, 502, headers);
+  }
+
+  const retryHeader = upstream.headers.get("Retry-After") || upstream.headers.get("X-RateLimit-Retry-After");
+  const retryAfterSeconds = retryHeader === null ? null : Math.max(0, Number(retryHeader) || 0);
+  const rateLimit = {
+    limit: upstream.headers.get("X-RateLimit-Limit"),
+    remaining: upstream.headers.get("X-RateLimit-Remaining"),
+    retryAfterSeconds,
+    plan: upstream.headers.get("X-RateLimit-Type")
+  };
+
+  if (upstream.status === 404) {
+    return jsonReply({ match: false, notFound: true, isbn, rateLimit }, 200, headers);
+  }
+
+  let payload = {};
+  try { payload = await upstream.json(); } catch {
+    return jsonReply({ error: "ISBNLab returned an invalid JSON response.", code: "invalid_upstream_response" }, 502, headers);
+  }
+
+  if (upstream.status === 429) {
+    return jsonReply({
+      error: payload.detail || "ISBNLab request limit reached.",
+      code: "isbnlab_rate_limited",
+      retryAfterSeconds: retryAfterSeconds === null ? 1 : Math.max(1, retryAfterSeconds),
+      rateLimit
+    }, 429, headers);
+  }
+  if (!upstream.ok) {
+    return jsonReply({
+      error: payload.detail || ("ISBNLab HTTP " + upstream.status),
+      code: upstream.status === 401 || upstream.status === 403 ? "isbnlab_auth_error" : "isbnlab_upstream_error",
+      upstreamStatus: upstream.status,
+      rateLimit
+    }, upstream.status === 400 ? 400 : upstream.status === 401 || upstream.status === 403 ? 502 : upstream.status >= 500 ? 503 : 502, headers);
+  }
+  if (!payload || typeof payload.title !== "string" || !payload.title.trim()) {
+    return jsonReply({ error: "ISBNLab returned a book record without a usable title.", code: "invalid_book_record" }, 502, headers);
+  }
+  return jsonReply({ match: true, isbn, book: payload, rateLimit }, 200, headers);
 }
 
 async function lookupMelosProduct(request, env, headers) {
