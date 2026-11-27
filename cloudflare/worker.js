@@ -369,7 +369,7 @@ export default {
     if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers);
     if (pathname === "/upload/abort" && request.method === "DELETE") return uploadAbort(request, env, headers);
 
-    const reviewMatch = pathname.match(/^\\/review\\/([A-Za-z0-9_-]{43})\\/([^/]+)$/);
+    const reviewMatch = pathname.match(/^\/review\/([A-Za-z0-9_-]{43})\/([^/]+)$/);
     if (reviewMatch && (request.method === "GET" || request.method === "HEAD")) {
       if (!UUID_RE.test(reviewMatch[2])) return reply("Not found", 404, headers);
       try {
