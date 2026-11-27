@@ -250,7 +250,7 @@ function booksPage(){
   const reanalyzeMetadata=all.filter(b=>b.provider==='r2'&&!b.metadataReviewed&&b.uploadStatus==='stored').length;
   const unfinishedUploads=all.filter(b=>b.provider==='r2'&&b.uploadStatus!=='stored').length;
   const queueText=metadataInProgress?'Metadatos: '+metadataQueueProgress.done+'/'+metadataQueueProgress.total+' · errores: '+metadataQueueProgress.failed:(pendingMetadata?pendingMetadata+' ficha(s) pendientes de análisis':'No hay metadatos pendientes');
-  return '<div class="heading"><div><h1>Administrar libros</h1><p>Los PDFs guardados se conservan aunque su ficha bibliográfica todavía no esté completa.</p></div><div class="books-admin-actions"><button class="secondary" id="reconcile-storage">Reconciliar R2 / recuperar nombres</button><button class="primary" id="run-metadata" '+(metadataInProgress||!pendingMetadata?'disabled':'')+'>Identificar pendientes ('+pendingMetadata+')</button><button class="secondary" id="rebuild-metadata" '+(metadataInProgress||!reanalyzeMetadata?'disabled':'')+'>Identificar y revisar todos ('+reanalyzeMetadata+')</button><button class="secondary" id="stop-metadata" '+(metadataInProgress?'':'disabled')+'>Detener análisis</button></div></div><div class="metadata-queue-status" id="metadata-queue-status" aria-live="polite">'+esc(queueText)+'</div>'+(unfinishedUploads?'<p class="notice">Hay '+unfinishedUploads+' carga(s) incompleta(s). Podés revisar y eliminar los registros que no tengan PDF completo.</p>':'')+'<div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="panel"><table class="pending-table books-admin-table"><thead><tr><th>Libro / Autores</th><th>ISBN</th><th>Colección</th><th>Catálogo</th><th>Subida</th><th>Metadatos</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
+  return '<div class="heading"><div><h1>Administrar libros</h1><p>Los PDFs guardados se conservan aunque su ficha bibliográfica todavía no esté completa.</p></div><div class="books-admin-actions"><button class="secondary" id="reconcile-storage">Reconciliar R2 / recuperar nombres</button><button class="secondary" id="recover-local-filenames">Recuperar nombres desde carpeta local</button><input id="filename-source-folder" type="file" accept=".pdf,application/pdf" webkitdirectory directory multiple hidden><span id="filename-recovery-status" class="muted" aria-live="polite"></span><button class="primary" id="run-metadata" '+(metadataInProgress||!pendingMetadata?'disabled':'')+'>Identificar pendientes ('+pendingMetadata+')</button><button class="secondary" id="rebuild-metadata" '+(metadataInProgress||!reanalyzeMetadata?'disabled':'')+'>Identificar y revisar todos ('+reanalyzeMetadata+')</button><button class="secondary" id="stop-metadata" '+(metadataInProgress?'':'disabled')+'>Detener análisis</button></div></div><div class="metadata-queue-status" id="metadata-queue-status" aria-live="polite">'+esc(queueText)+'</div>'+(unfinishedUploads?'<p class="notice">Hay '+unfinishedUploads+' carga(s) incompleta(s). Podés revisar y eliminar los registros que no tengan PDF completo.</p>':'')+'<div class="catalog-controls books-admin-controls"><label>Buscar<input id="book-admin-search" type="search" placeholder="Título, autor, ISBN o tema"></label><label>Mostrar<select id="book-admin-status"><option value="all">Todos</option><option value="published">Publicados</option><option value="draft">Borradores privados</option></select></label></div><div class="panel"><table class="pending-table books-admin-table"><thead><tr><th>Libro / Autores</th><th>ISBN</th><th>Colección</th><th>Catálogo</th><th>Subida</th><th>Metadatos</th><th>Tipo</th><th>Acciones</th></tr></thead><tbody id="book-admin-rows">'+bookManagementRows()+'</tbody></table></div><p class="footnote">Las coincidencias bibliográficas se marcan como advertencia: confirmá que sean realmente el mismo libro antes de borrar o publicar.</p>';
 }
 function refreshMetadataQueueBanner(){
   const status=document.querySelector('#metadata-queue-status');
@@ -267,6 +267,9 @@ function bindBookManagement(){
   search?.addEventListener('input',refresh);status?.addEventListener('change',refresh);
   document.querySelector('#run-metadata')?.addEventListener('click',()=>runMetadataQueue());
   document.querySelector('#rebuild-metadata')?.addEventListener('click',()=>runMetadataQueue(null,null,true));
+  const localRecoverButton=document.querySelector('#recover-local-filenames'),folderInput=document.querySelector('#filename-source-folder');
+  localRecoverButton?.addEventListener('click',()=>folderInput?.click());
+  folderInput?.addEventListener('change',()=>{const selected=[...(folderInput.files||[])];folderInput.value='';void recoverOriginalFilenamesFromFolder(selected)});
   document.querySelector('#stop-metadata')?.addEventListener('click',()=>{metadataCancelRequested=true;toast('Se detendrá la cola al terminar los documentos que ya están en proceso.')});
   document.querySelector('#reconcile-storage')?.addEventListener('click',async()=>{
     const button=document.querySelector('#reconcile-storage');if(button)button.disabled=true;
@@ -286,6 +289,54 @@ async function reconcileStorageFromWorker(tokenOverride=null){
   const data=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(data.error||data.message||'La pasarela no pudo recuperar los archivos.');
   return data;
+}
+
+
+async function recoverOriginalFilenamesFromFolder(files){
+  if(role!=='admin'||!live)return toast('Solo el administrador puede recuperar nombres.');
+  const pdfs=(files||[]).filter(f=>/\.pdf$/i.test(f.name)&&(f.type==='application/pdf'||!f.type));
+  if(!pdfs.length)return toast('La carpeta seleccionada no contiene PDFs.');
+  const button=document.querySelector('#recover-local-filenames'),status=document.querySelector('#filename-recovery-status');
+  if(button)button.disabled=true;
+  const show=(message)=>{if(status)status.textContent=message};
+  try{
+    show('Buscando coincidencias por tamaño…');
+    const{data:rows,error}=await db.from('documents').select('id,size_bytes,file_fingerprint,original_filename')
+      .eq('provider','r2').eq('upload_status','stored').not('file_fingerprint','is',null);
+    if(error)throw error;
+    const missing=(rows||[]).filter(x=>!String(x.original_filename||'').trim());
+    const bySize=new Map();
+    for(const row of missing){const size=Number(row.size_bytes);if(!bySize.has(size))bySize.set(size,[]);bySize.get(size).push(row)}
+    let cursor=0,matched=0,checked=0,errors=0,skipped=0;
+    const worker=async()=>{
+      while(true){
+        const index=cursor++;if(index>=pdfs.length)return;
+        const file=pdfs[index],possible=bySize.get(file.size)||[];
+        if(!possible.length){skipped++;checked++;show('Comparando '+checked+'/'+pdfs.length+' · '+matched+' nombre(s) recuperado(s)');continue}
+        try{
+          const fingerprint=await fingerprintFile(file);
+          const matches=possible.filter(x=>x.file_fingerprint===fingerprint);
+          if(matches.length){
+            const{error:updateError}=await db.from('documents').update({original_filename:file.name}).in('id',matches.map(x=>x.id));
+            if(updateError)throw updateError;
+            for(const row of matches){row.original_filename=file.name}
+            matched+=matches.length;
+          }
+        }catch(error){errors++;console.warn('Filename recovery failed for',file.name,error)}
+        checked++;
+        show('Comparando '+checked+'/'+pdfs.length+' · '+matched+' nombre(s) recuperado(s)');
+      }
+    };
+    await Promise.all(Array.from({length:Math.min(2,pdfs.length)},worker));
+    show('Finalizado · '+matched+' nombre(s) recuperado(s) · '+errors+' error(es)');
+    toast('Recuperación local terminada: '+matched+' nombre(s) recuperado(s) de '+pdfs.length+' PDF(s) seleccionados.'+(errors?' · '+errors+' error(es)':'')+(skipped?' · '+skipped+' sin coincidencia por tamaño':'')+'. No se subió ningún archivo.');
+    await loadUser(me);
+  }catch(error){
+    show('Error: '+(error?.message||'no se pudo recuperar'));
+    toast('No se pudieron recuperar los nombres: '+(error?.message||'error inesperado'));
+  }finally{
+    if(button)button.disabled=false;
+  }
 }
 
 async function runMetadataQueue(ids=null,tokenOverride=null,reprocessAll=false){
