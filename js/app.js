@@ -1008,13 +1008,6 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
  return best;
 }
 
-async function lookupBibliographicCandidate(contexts){
- let best=null;
- for(const context of contexts){if(!context.title&&!context.isbn)continue;try{const ranked=(await googleBooksSearch(context)).map(x=>metadataRankCandidate(x,context)).sort((a,b)=>b.score-a.score);if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];if(best?.score>=90&&(best.isbnMatch||best.titleSimilarity>=.88&&best.authorMatch))return best}catch(e){console.info('Google Books lookup unavailable:',e?.message||e)}}
- if(best?.score>=90)return best;
- for(const context of contexts){if(!context.title&&!context.isbn)continue;try{const ranked=(await openLibrarySearch(context)).map(x=>metadataRankCandidate(x,context)).sort((a,b)=>b.score-a.score);if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];if(best?.score>=90&&(best.isbnMatch||best.titleSimilarity>=.88&&best.authorMatch))return best}catch(e){console.info('Open Library lookup unavailable:',e?.message||e)}if(best?.score>=90)break}
- return best;
-}
 function metadataDetectDocumentKind(filename,text,catalogMatch,identifiers=[]){
  const s=metadataTextKey(String(filename||'')+' '+String(text||'').slice(0,16000));
  const types=new Set((identifiers||[]).map(x=>x.type));
