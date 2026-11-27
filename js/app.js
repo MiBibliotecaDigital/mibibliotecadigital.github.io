@@ -85,6 +85,24 @@ async function uploadOneFile(file,token,onProgress,fileFingerprint){
     return result.document;
   }catch(error){await abort();throw error}
 }
+function askBibliographicDuplicateChoice(file,matches){
+  return new Promise(resolve=>{
+    const modal=document.createElement('div');modal.className='modal-bg';
+    modal.innerHTML='<section class="modal duplicate-modal"><header><b>Coincidencia bibliográfica</b><button id="bib-duplicate-close" type="button">Cerrar ×</button></header><p>El análisis encontró un libro existente que podría ser el mismo que <b>'+esc(file.name)+'</b>:</p><ul>'+matches.map(x=>'<li><b>'+esc(x.title||'Sin título')+'</b> · '+esc((x.authors||[]).join(', ')||'Autor sin identificar')+' · ISBN '+esc(x.isbn||'—')+'</li>').join('')+'</ul><p class="muted">El nuevo PDF quedó como borrador privado. Podés descartarlo o conservarlo como una edición/versión independiente.</p><div class="metadata-actions"><button class="secondary" id="bib-duplicate-skip" type="button">Descartar esta copia</button><button class="primary" id="bib-duplicate-keep" type="button">Conservar como libro diferente</button></div></section>';
+    document.body.append(modal);
+    const finish=value=>{modal.remove();resolve(value)};
+    modal.querySelector('#bib-duplicate-close').onclick=()=>finish(false);
+    modal.querySelector('#bib-duplicate-skip').onclick=()=>finish(false);
+    modal.querySelector('#bib-duplicate-keep').onclick=()=>finish(true);
+    modal.onclick=e=>{if(e.target===modal)finish(false)};
+  });
+}
+async function discardUploadedDraft(id,token){
+  const base=(c.pdfGatewayUrl||'').replace(/\/+$/,'');
+  const response=await fetch(base+'/document/'+encodeURIComponent(id),{method:'DELETE',headers:{Authorization:'Bearer '+token}});
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(result.error||'No se pudo descartar el duplicado.');
+}
 async function uploadMultiple(e){
   e.preventDefault();
   if(role!=='admin'||!live)return toast('Solo el administrador puede cargar documentos.');
@@ -164,7 +182,16 @@ function bindBookManagement(){
 }
  try{
         const metadata=await analyzeStoredDocument(document.id,false,session.access_token);
-        status.textContent=metadata?.isbnLookup?'Subido · ficha enriquecida desde ISBN':'Subido · ficha analizada automáticamente';
+        if(metadata?.possibleDuplicates?.length){
+          const keep=await askBibliographicDuplicateChoice(files[i],metadata.possibleDuplicates);
+          if(!keep){
+            await discardUploadedDraft(document.id,session.access_token);
+            row.classList.add('upload-result-skipped');status.textContent='Coincidencia bibliográfica · borrador descartado';skipped++;continue;
+          }
+          status.textContent='Conservado como libro diferente · ficha analizada';
+        }else{
+          status.textContent=metadata?.isbnLookup?'Subido · ficha enriquecida desde ISBN':'Subido · ficha analizada automáticamente';
+        }
       }catch(metaError){
         console.warn('PDF metadata analysis skipped',metaError);
         status.textContent='Subido · análisis parcial; ficha editable';
@@ -416,7 +443,9 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null){
     }
     const {error}=await db.from('documents').update(updates).eq('id',id);
     if(error)throw error;
-    return {...updates,isbnLookup:!!external,metadataProvider:external?.source||null};
+    const candidate={...d,...updates,title:updates.title||d.title,authors:updates.authors||d.authors,isbn:updates.isbn||d.isbn};
+    const possibleDuplicates=[...books,...pendingDocs].filter(other=>bookDuplicateMatch(candidate,[other]));
+    return {...updates,isbnLookup:!!external,metadataProvider:external?.source||null,possibleDuplicates};
   }finally{try{await task.destroy()}catch{}}
 }
 
