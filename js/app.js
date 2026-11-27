@@ -1653,25 +1653,27 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   else if(matchStatus==='review')updates.metadata_error='Se encontró una posible coincidencia de catálogo de '+external.score+'/100. Confirmá título, autor e identificadores antes de aplicarla.';
   else if(matchStatus==='non_book')updates.metadata_error='El documento parece ser una publicación no monográfica. Revisá su tipo antes de publicarlo.';
   const matchedIdentifierType=external?.identifierMatch?.type||null;
-  const exactIsbnMatch=accepted&&external?.score===100&&matchedIdentifierType==='isbn'&&
+  const exactIdentifierMatch=accepted&&external?.score===100&&
+   ['isbn','ismn','publisher_number','oclc'].includes(matchedIdentifierType)&&
    external.titleSimilarity>=.92&&metadataTitleIsSpecific(primaryTitle)&&
    metadataTitleIsSpecific(external.title);
   const catalogAuthorConsistent=!external?.authors?.length||!pdfAuthors.length||external.authorMatch;
-  const completeIsbnMetadata=exactIsbnMatch&&proposedAuthors.length>0&&catalogAuthorConsistent&&
+  const hasVerifiedIdentifier=persistedIdentifiers.some(x=>['isbn','ismn','publisher_number','oclc'].includes(x.type)&&x.normalized);
+  const completeVerifiedMetadata=exactIdentifierMatch&&proposedAuthors.length>0&&catalogAuthorConsistent&&
    !!(external.publisher||pdfPublisher||d.publisher)&&
    !!(external.year||pdfYear||d.year||d.publication_year)&&
-   !!(isbn||external.isbns?.length)&&
+   hasVerifiedIdentifier&&
    !!((updates.tags||d.tags||[]).length);
-  const safeCatalogMatch=exactMelosMatch||completeIsbnMetadata;
+  const safeCatalogMatch=exactMelosMatch||completeVerifiedMetadata;
   const autoPublished=safeCatalogMatch&&!possibleDuplicates.length&&
    (d.uploadStatus||d.upload_status)==='stored'&&
    ['book','music_score'].includes(finalKind);
   updates.metadata_evidence.autoPublication={
    eligible:safeCatalogMatch,
    published:autoPublished,
-   reason:autoPublished?'Coincidencia editorial exacta o ISBN verificado con título concordante y ficha completa':
+   reason:autoPublished?'Identificador editorial exacto o ISBN verificado, título concordante y ficha completa':
     possibleDuplicates.length?'Bloqueado por posible duplicado':
-    exactIsbnMatch&&!completeIsbnMetadata?'Ficha ISBN incompleta':
+    exactIdentifierMatch&&!completeVerifiedMetadata?'Ficha bibliográfica incompleta':
     accepted?'La coincidencia no cumple los requisitos de autopublicación':'Sin coincidencia bibliográfica aceptada'
   };
   if(autoPublished)updates.is_published=true;
