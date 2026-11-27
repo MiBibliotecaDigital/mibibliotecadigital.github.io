@@ -139,20 +139,78 @@ function normalizeDocumentMetadata(input, fallbackTitle) {
 async function uploadStart(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
-  const fileSize = Number(request.headers.get("X-File-Size"));
-  if (!Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE) {
-    return reply("Invalid file size. Maximum supported size is 2 GiB.", 413, headers);
+  let body;
+  try { body = await request.json(); } catch { return reply("Invalid upload start data.", 400, headers); }
+  const fileSize = Number(body?.fileSize);
+  const safeFileName = typeof body?.fileName === "string" ? body.fileName.slice(0, 255) : "";
+  const fileFingerprint = body?.fileFingerprint || null;
+  if (!Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE ||
+      !safeFileName.toLowerCase().endsWith(".pdf") ||
+      (fileFingerprint !== null && (typeof fileFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(fileFingerprint)))) {
+    return reply("Invalid upload. A PDF of up to 2 GiB is required.", 413, headers);
   }
+
+  // Create the catalogue row first. From this point onward the upload survives
+  // a browser refresh or a metadata-analysis failure.
+  const documentId = crypto.randomUUID();
   const key = "library/" + crypto.randomUUID() + ".pdf";
+  const document = {
+    id: documentId,
+    title: titleFromFilename(safeFileName),
+    authors: [],
+    category: "General",
+    description: "",
+    provider: "r2",
+    r2_key: key,
+    mime_type: "application/pdf",
+    size_bytes: fileSize,
+    is_demo: false,
+    is_published: false,
+    file_fingerprint: fileFingerprint,
+    metadata_source: "filename",
+    metadata_reviewed: false,
+    metadata_status: "pending",
+    metadata_error: null,
+    upload_status: "uploading",
+    original_filename: safeFileName,
+    uploaded_by: auth.user.id
+  };
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const insertResponse = await fetch(base + "/rest/v1/documents", {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: auth.authorization,
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    },
+    body: JSON.stringify(document)
+  });
+  if (!insertResponse.ok) {
+    console.error("Could not create upload catalogue row", insertResponse.status, await insertResponse.text());
+    return reply("Could not reserve a catalogue entry for this PDF. The upload was not started.", 502, headers);
+  }
+
   try {
     const upload = await env.BIBLIOTECA.createMultipartUpload(key, {
       httpMetadata: { contentType: "application/pdf", cacheControl: "private, no-store" },
-      customMetadata: { expectedSize: String(fileSize), uploadedBy: auth.user.id }
+      customMetadata: {
+        documentId,
+        expectedSize: String(fileSize),
+        uploadedBy: auth.user.id,
+        originalFilename: safeFileName,
+        fileFingerprint: fileFingerprint || ""
+      }
     });
-    return jsonReply({ key: upload.key, uploadId: upload.uploadId, partSize: PART_SIZE }, 201, headers);
+    return jsonReply({ documentId, key: upload.key, uploadId: upload.uploadId, partSize: PART_SIZE }, 201, headers);
   } catch (error) {
+    const deleteQuery = new URLSearchParams({ id: "eq." + documentId });
+    await fetch(base + "/rest/v1/documents?" + deleteQuery, {
+      method: "DELETE",
+      headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization }
+    });
     console.error("R2 multipart start failed", error);
-    return reply("Could not start the upload.", 502, headers);
+    return reply("Could not start the upload. No PDF was stored.", 502, headers);
   }
 }
 
@@ -198,79 +256,236 @@ async function uploadComplete(request, env, headers) {
   const auth = await requireAdmin(request, env, headers);
   if (auth.response) return auth.response;
   let body;
-  try { body = await request.json(); }
-  catch { return reply("Invalid completion data.", 400, headers); }
-  const { key, uploadId, parts, fileSize, fileName, fileFingerprint } = body || {};
-  const safeFileName = typeof fileName === "string" ? fileName.slice(0, 255) : "";
-  const metadata = normalizeDocumentMetadata(body?.metadata, titleFromFilename(safeFileName));
-  if (!validUploadKey(key) || typeof uploadId !== "string" || !uploadId ||
-      uploadId.length > 512 || !metadata || !Array.isArray(parts) ||
-      parts.length < 1 || parts.length > 10000 ||
+  try { body = await request.json(); } catch { return reply("Invalid completion data.", 400, headers); }
+  const { key, uploadId, documentId, parts, fileSize, fileFingerprint } = body || {};
+  if (!validUploadKey(key) || !UUID_RE.test(documentId || "") ||
+      typeof uploadId !== "string" || !uploadId || uploadId.length > 512 ||
+      !Array.isArray(parts) || parts.length < 1 || parts.length > 10000 ||
       !Number.isSafeInteger(fileSize) || fileSize < 100 || fileSize > MAX_FILE_SIZE ||
       (fileFingerprint != null && (typeof fileFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(fileFingerprint)))) {
     return reply("Invalid upload completion data.", 400, headers);
   }
-  const normalizedParts = [...parts].sort((a, b) => Number(a.partNumber) - Number(b.partNumber));
-  for (let i = 0; i < normalizedParts.length; i++) {
-    const part = normalizedParts[i];
-    if (part.partNumber !== i + 1 || typeof part.etag !== "string" ||
-        !part.etag || part.etag.length > 256) {
-      return reply("The uploaded parts are incomplete or invalid.", 400, headers);
-    }
-  }
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const lookup = new URLSearchParams({ select: "id,r2_key,size_bytes,upload_status", id: "eq." + documentId, provider: "eq.r2", limit: "1" });
+  const lookupResponse = await fetch(base + "/rest/v1/documents?" + lookup, {
+    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
+  });
+  if (!lookupResponse.ok) return reply("Could not verify the reserved catalogue entry.", 502, headers);
+  const existingRows = await lookupResponse.json();
+  const existing = Array.isArray(existingRows) ? existingRows[0] : null;
+  if (!existing || existing.r2_key !== key) return reply("The reserved catalogue entry does not match this upload.", 409, headers);
+
   let object;
   try {
-    const multipart = env.BIBLIOTECA.resumeMultipartUpload(key, uploadId);
-    object = await multipart.complete(normalizedParts);
+    object = await env.BIBLIOTECA.resumeMultipartUpload(key, uploadId).complete(
+      [...parts].sort((a, b) => Number(a.partNumber) - Number(b.partNumber))
+    );
   } catch (error) {
-    console.error("R2 multipart completion failed", error);
-    return reply("The PDF could not be assembled. Retry the upload.", 400, headers);
+    // A retry after an uncertain client response can find the object already committed.
+    const alreadyStored = await env.BIBLIOTECA.head(key);
+    if (!alreadyStored || alreadyStored.size !== fileSize) {
+      console.error("R2 multipart completion failed", error);
+      return reply("The PDF could not be assembled. The reserved entry remains available for recovery.", 400, headers);
+    }
+    object = alreadyStored;
   }
-  // R2's committed object size is the authoritative integrity check.
-  // Multipart customMetadata is useful metadata, but must not be a gate for
-  // accepting a complete object: some R2 completion responses omit it.
   const stored = await env.BIBLIOTECA.head(key);
   if (!stored || stored.size !== fileSize || object.size !== fileSize) {
-    await env.BIBLIOTECA.delete(key);
-    console.error("Upload size verification failed", {
-      expectedSize: fileSize,
-      completedSize: object?.size ?? null,
-      storedSize: stored?.size ?? null
-    });
-    return reply("The uploaded PDF size does not match the selected file. The incomplete object was removed.", 400, headers);
-  }
-
-  const document = {
-    ...metadata,
-    file_fingerprint: fileFingerprint || null,
-    provider: "r2",
-    r2_key: key,
-    mime_type: "application/pdf",
-    size_bytes: object.size,
-    is_demo: false,
-    is_published: false
-  };
-  const insertResponse = await fetch(
-    env.SUPABASE_URL.replace(/\/+$/, "") + "/rest/v1/documents",
-    {
-      method: "POST",
+    const failurePatch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(documentId), {
+      method: "PATCH",
       headers: {
         apikey: env.SUPABASE_PUBLISHABLE_KEY,
         Authorization: auth.authorization,
-        "Content-Type": "application/json",
-        Prefer: "return=representation"
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify(document)
-    }
-  );
-  if (!insertResponse.ok) {
-    const errorText = await insertResponse.text();
-    console.error("Document catalogue insert failed", insertResponse.status, errorText);
-    await env.BIBLIOTECA.delete(key);
-    return reply("The PDF was uploaded but could not be added to the catalogue. The file has been rolled back.", 502, headers);
+      body: JSON.stringify({ upload_status: "failed", metadata_error: "El tamaño del objeto no coincide con el archivo seleccionado." })
+    });
+    if (!failurePatch.ok) console.error("Could not mark size-mismatch upload as failed", await failurePatch.text());
+    return reply("The stored PDF size does not match the selected file. It was retained for administrator review.", 409, headers);
   }
-  const rows = await insertResponse.json();
-  return jsonReply({ ok: true, document: Array.isArray(rows) ? rows[0] : null }, 201, headers);
+
+  const patch = {
+    upload_status: "stored",
+    size_bytes: stored.size,
+    file_fingerprint: fileFingerprint || existing.file_fingerprint || stored.customMetadata?.fileFingerprint || null,
+    metadata_status: "pending",
+    metadata_error: null
+  };
+  const updateResponse = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(documentId) + "&r2_key=eq." + encodeURIComponent(key), {
+    method: "PATCH",
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: auth.authorization,
+      "Content-Type": "application/json",
+      Prefer: "return=representation"
+    },
+    body: JSON.stringify(patch)
+  });
+  if (!updateResponse.ok) {
+    // Do not delete a committed R2 object just because PostgREST is unavailable.
+    console.error("PDF committed but catalogue status update failed", updateResponse.status, await updateResponse.text());
+    return jsonReply({ ok: true, stored: true, catalogueSynced: false, documentId }, 202, headers);
+  }
+  const updatedRows = await updateResponse.json();
+  if (!Array.isArray(updatedRows) || updatedRows.length !== 1) {
+    return jsonReply({ ok: true, stored: true, catalogueSynced: false, documentId }, 202, headers);
+  }
+  return jsonReply({ ok: true, stored: true, catalogueSynced: true, documentId }, 201, headers);
+}
+
+async function uploadAbort(request, env, headers) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  const url = new URL(request.url);
+  const key = url.searchParams.get("key");
+  const uploadId = url.searchParams.get("uploadId");
+  const documentId = url.searchParams.get("documentId");
+  if (!validUploadKey(key) || !uploadId || uploadId.length > 512 || !UUID_RE.test(documentId || "")) {
+    return reply("Invalid upload abort request.", 400, headers);
+  }
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const existingObject = await env.BIBLIOTECA.head(key);
+  if (existingObject) {
+    const lookup = new URLSearchParams({ select: "r2_key,size_bytes,file_fingerprint", id: "eq." + documentId, limit: "1" });
+    const lookupResponse = await fetch(base + "/rest/v1/documents?" + lookup, {
+      headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
+    });
+    if (lookupResponse.ok) {
+      const rows = await lookupResponse.json(), row = Array.isArray(rows) ? rows[0] : null;
+      if (row && row.r2_key === key && Number(row.size_bytes) === existingObject.size) {
+        const patch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(documentId), {
+          method: "PATCH",
+          headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify({ upload_status: "stored", size_bytes: existingObject.size, file_fingerprint: row.file_fingerprint || existingObject.customMetadata?.fileFingerprint || null, metadata_status: "pending", metadata_error: null })
+        });
+        return jsonReply({ stored: true, documentId, catalogueSynced: patch.ok }, 200, headers);
+      }
+    }
+    return jsonReply({ stored: true, documentId, catalogueSynced: false }, 200, headers);
+  }
+  try { await env.BIBLIOTECA.resumeMultipartUpload(key, uploadId).abort(); } catch (error) {
+    console.error("R2 multipart abort failed", error);
+  }
+  const patch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(documentId), {
+    method: "PATCH",
+    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json" },
+    body: JSON.stringify({ upload_status: "failed", metadata_error: "La carga se interrumpió antes de completar el PDF." })
+  });
+  return jsonReply({ stored: false, failed: true, documentId, catalogueSynced: patch.ok }, 200, headers);
+}
+
+async function reconcileStorage(request, env, headers, auth) {
+  const base = env.SUPABASE_URL.replace(/\/+$/, "");
+  const rows = [];
+  let offset = 0;
+  while (true) {
+    const query = new URLSearchParams({ select: "id,r2_key,size_bytes,file_fingerprint,upload_status,metadata_status,created_at", provider: "eq.r2", order: "created_at.asc", limit: "1000", offset: String(offset) });
+    const response = await fetch(base + "/rest/v1/documents?" + query, {
+      headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
+    });
+    if (!response.ok) return reply("Could not read the catalogue for reconciliation.", 502, headers);
+    const page = await response.json();
+    rows.push(...(Array.isArray(page) ? page : []));
+    if (!Array.isArray(page) || page.length < 1000) break;
+    offset += 1000;
+  }
+  const byKey = new Map(rows.filter(row => row.r2_key).map(row => [row.r2_key, row]));
+  const objects = [];
+  let cursor;
+  do {
+    const result = await env.BIBLIOTECA.list({
+      prefix: "library/",
+      limit: 1000,
+      ...(cursor ? { cursor } : {}),
+      include: ["customMetadata"]
+    });
+    objects.push(...(result.objects || []));
+    cursor = result.truncated ? result.cursor : undefined;
+  } while (cursor);
+
+  const candidates = objects.filter(object => validUploadKey(object.key));
+  const stats = { scanned: candidates.length, recovered: 0, completed: 0, failed: 0, errors: [] };
+  let cursorIndex = 0;
+  const worker = async () => {
+    while (true) {
+      const index = cursorIndex++;
+      if (index >= candidates.length) return;
+      const object = candidates[index];
+      const custom = object.customMetadata || {};
+      const existing = byKey.get(object.key);
+      try {
+        if (existing) {
+          if (existing.upload_status !== "stored" && Number(existing.size_bytes) === object.size) {
+            const patch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(existing.id), {
+              method: "PATCH",
+              headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json", Prefer: "return=representation" },
+              body: JSON.stringify({
+                upload_status: "stored",
+                file_fingerprint: existing.file_fingerprint || custom.fileFingerprint || null,
+                metadata_status: "pending",
+                metadata_error: null
+              })
+            });
+            if (patch.ok) stats.completed++;
+            else { stats.failed++; stats.errors.push(object.key + ": catalogue status update failed"); }
+          }
+          continue;
+        }
+        const title = titleFromFilename(custom.originalFilename || object.key.split("/").pop());
+        const recoveredId = UUID_RE.test(custom.documentId || "") ? custom.documentId : crypto.randomUUID();
+        const restored = {
+          id: recoveredId,
+          title,
+          authors: [],
+          category: "General",
+          description: "",
+          provider: "r2",
+          r2_key: object.key,
+          mime_type: "application/pdf",
+          size_bytes: object.size,
+          is_demo: false,
+          is_published: false,
+          file_fingerprint: /^[0-9a-f]{64}$/i.test(custom.fileFingerprint || "") ? custom.fileFingerprint : null,
+          metadata_source: "filename",
+          metadata_reviewed: false,
+          metadata_status: "pending",
+          metadata_error: null,
+          upload_status: "stored",
+          original_filename: custom.originalFilename || object.key.split("/").pop(),
+          uploaded_by: UUID_RE.test(auth.user.id) ? auth.user.id : null
+        };
+        const insert = await fetch(base + "/rest/v1/documents", {
+          method: "POST",
+          headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(restored)
+        });
+        if (insert.ok) {
+          byKey.set(object.key, restored);
+          stats.recovered++;
+        } else {
+          const error = await insert.text();
+          stats.failed++;
+          if (stats.errors.length < 10) stats.errors.push(object.key + ": " + error.slice(0, 200));
+        }
+      } catch (error) {
+        stats.failed++;
+        if (stats.errors.length < 10) stats.errors.push(object.key + ": " + String(error).slice(0, 200));
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, worker));
+
+  const staleBefore = Date.now() - 30 * 60 * 1000;
+  const stale = rows.filter(row => row.upload_status === "uploading" && Date.parse(row.created_at || "") < staleBefore && !candidates.some(object => object.key === row.r2_key));
+  for (const row of stale) {
+    const patch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(row.id), {
+      method: "PATCH",
+      headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ upload_status: "failed", metadata_error: "La carga multipart quedó interrumpida; no se encontró un PDF completo en R2." })
+    });
+    if (patch.ok) stats.failed++;
+  }
+  return jsonReply(stats, 200, headers);
 }
 
 
@@ -359,6 +574,11 @@ export default {
     if (pathname === "/upload/part" && request.method === "PUT") return uploadPart(request, env, headers);
     if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers);
     if (pathname === "/upload/abort" && request.method === "DELETE") return uploadAbort(request, env, headers);
+    if (pathname === "/admin/reconcile-storage" && request.method === "POST") {
+      const auth = await requireAdmin(request, env, headers);
+      if (auth.response) return auth.response;
+      return reconcileStorage(request, env, headers, auth);
+    }
     const deleteMatch = pathname.match(/^\/document\/([^/]+)$/);
     if (deleteMatch && request.method === "DELETE") {
       const documentId = deleteMatch[1];
