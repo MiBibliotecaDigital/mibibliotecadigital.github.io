@@ -265,6 +265,14 @@ async function uploadComplete(request, env, headers) {
       (fileFingerprint != null && (typeof fileFingerprint !== "string" || !/^[0-9a-f]{64}$/i.test(fileFingerprint)))) {
     return reply("Invalid upload completion data.", 400, headers);
   }
+  const normalizedParts = [...parts].sort((a, b) => Number(a?.partNumber) - Number(b?.partNumber));
+  for (let i = 0; i < normalizedParts.length; i++) {
+    const part = normalizedParts[i];
+    if (Number(part?.partNumber) !== i + 1 || typeof part?.etag !== "string" ||
+        !part.etag || part.etag.length > 256) {
+      return reply("The uploaded parts are incomplete or invalid.", 400, headers);
+    }
+  }
   const base = env.SUPABASE_URL.replace(/\/+$/, "");
   const lookup = new URLSearchParams({ select: "id,r2_key,size_bytes,upload_status", id: "eq." + documentId, provider: "eq.r2", limit: "1" });
   const lookupResponse = await fetch(base + "/rest/v1/documents?" + lookup, {
@@ -277,9 +285,7 @@ async function uploadComplete(request, env, headers) {
 
   let object;
   try {
-    object = await env.BIBLIOTECA.resumeMultipartUpload(key, uploadId).complete(
-      [...parts].sort((a, b) => Number(a.partNumber) - Number(b.partNumber))
-    );
+    object = await env.BIBLIOTECA.resumeMultipartUpload(key, uploadId).complete(normalizedParts);
   } catch (error) {
     // A retry after an uncertain client response can find the object already committed.
     const alreadyStored = await env.BIBLIOTECA.head(key);
@@ -361,7 +367,13 @@ async function uploadAbort(request, env, headers) {
         return jsonReply({ stored: true, documentId, catalogueSynced: patch.ok }, 200, headers);
       }
     }
-    return jsonReply({ stored: true, documentId, catalogueSynced: false }, 200, headers);
+    const failurePatch = await fetch(base + "/rest/v1/documents?id=eq." + encodeURIComponent(documentId), {
+      method: "PATCH",
+      headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, "Content-Type": "application/json" },
+      body: JSON.stringify({ upload_status: "failed", metadata_error: "Se encontró un objeto R2, pero no coincide con la ficha de carga o su tamaño esperado." })
+    });
+    if (!failurePatch.ok) console.error("Could not mark invalid completed object as failed", await failurePatch.text());
+    return jsonReply({ stored: false, failed: true, documentId, catalogueSynced: false }, 409, headers);
   }
   try { await env.BIBLIOTECA.resumeMultipartUpload(key, uploadId).abort(); } catch (error) {
     console.error("R2 multipart abort failed", error);
