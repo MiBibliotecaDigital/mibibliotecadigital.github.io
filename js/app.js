@@ -1277,15 +1277,22 @@ async function melosLookupPublisherNumber(identifier,trace=[]){
   trace.push({source:'Melos · catálogo oficial',identifier:identifier.value,results:0,note:'El Cod de la ficha no coincide exactamente.'});
   return[];
  }
- const barcode=String(product.barcode||'').trim(),barcodeIsmn=metadataValidIsmn(barcode),barcodeIsbn=metadataValidIsbn(barcode);
+ const barcode=String(product.barcode||'').trim();
+ const barcodeParts=barcode.split(/[,;\s]+/).filter(Boolean);
+ const barcodeIsmn=barcodeParts.map(metadataValidIsmn).find(Boolean)||null;
+ const barcodeIsbn=barcodeParts.map(metadataValidIsbn).find(Boolean)||null;
+ const issuuIsbn=(String(product.issuuUrl||'').match(/(?:97[89]\d{10})/g)||[]).map(metadataValidIsbn).find(Boolean)||null;
  const identifiers=[
   {...identifier,value:product.code,normalized,source:'Melos · Cod verificado',sourceRecord:product.url,pages:identifier.pages||[],occurrences:identifier.occurrences||0,confidence:100}
  ];
  if(barcodeIsmn)identifiers.push({type:'ismn',value:barcodeIsmn,normalized:metadataNormalizeIdentifier('ismn',barcodeIsmn),source:'Melos · código de barras',sourceRecord:product.url,pages:[],occurrences:1,confidence:100});
- else if(barcodeIsbn)identifiers.push({type:'isbn',value:barcodeIsbn,normalized:barcodeIsbn,source:'Melos · código de barras',sourceRecord:product.url,pages:[],occurrences:1,confidence:100});
+ if(barcodeIsbn)identifiers.push({type:'isbn',value:barcodeIsbn,normalized:barcodeIsbn,source:'Melos · código de barras',sourceRecord:product.url,pages:[],occurrences:1,confidence:100});
+ if(issuuIsbn&&!identifiers.some(x=>x.type==='isbn'&&x.value===issuuIsbn))identifiers.push({type:'isbn',value:issuuIsbn,normalized:issuuIsbn,source:'Melos · enlace Issuu',sourceRecord:product.issuuUrl,pages:[],occurrences:1,confidence:100});
  const tags=[...(Array.isArray(product.tags)?product.tags:[])].filter(Boolean);
+ const melosBook=product.documentKind==='book';
+ if(melosBook)tags.unshift('Libros');
  if(product.instrument)tags.unshift(product.instrument);
- if(!tags.some(x=>metadataTextKey(x)==='partituras'))tags.unshift('Partituras');
+ if(!melosBook&&!tags.some(x=>metadataTextKey(x)==='partituras'))tags.unshift('Partituras');
  if(!tags.some(x=>metadataTextKey(x)==='musica'))tags.unshift('Música');
  // Prefer explicit names from "Autor/Marca". When that field is generic
  // ("Autores varios"), use the official "Colaboradores" names for author indexing.
@@ -1304,14 +1311,14 @@ async function melosLookupPublisherNumber(identifier,trace=[]){
   identifiers,
   publisher:product.publisher||'Ediciones Melos',
   year:null,
-  description:'',
+  description:String(product.description||''),
   tags:[...new Set(tags)],
   pageCount:null,
   source:'Ediciones Melos · catálogo oficial',
   sourceId:product.url,
   sourceUrl:product.url,
-  printType:'MUSIC',
-  documentKind:'music_score',
+  printType:product.documentKind==='book'?'BOOK':'MUSIC',
+  documentKind:product.documentKind||'music_score',
   catalogDetails
  }].filter(x=>metadataTitleUsable(x.title));
 }
@@ -1324,7 +1331,9 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
   if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];
  };
  const addTrace=(source,identifier,candidates,error=null,details={})=>trace.push({source,identifier:identifier?.value||'',results:(candidates||[]).length,error:error?String(error?.message||error).slice(0,240):null,...details});
- for(const identifier of identifiers){
+ const identifierPriority={publisher_number:0,ismn:1,isbn:2,oclc:3,doi:4,issn:5};
+ const orderedIdentifiers=[...(identifiers||[])].sort((a,b)=>(identifierPriority[a.type]??9)-(identifierPriority[b.type]??9));
+ for(const identifier of orderedIdentifiers){
   if(identifier.type==='publisher_number'){
    let candidates=[];
    if(/^(?:BA|MEL)\s*[-.]?\s*\d{3,8}$/i.test(identifier.value||'')){
@@ -1566,7 +1575,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
    external.identifierMatch?.type==='publisher_number'&&
    metadataNormalizeIdentifier('publisher_number',external.catalogDetails?.verifiedCode||'')===
    metadataNormalizeIdentifier('publisher_number',detectedPublisherId?.value||'');
-  const finalKind=kind==='unknown'&&accepted?(external.documentKind||(external.printType==='BOOK'?'book':'unknown')):kind;
+  const finalKind=exactMelosMatch&&external?.documentKind?external.documentKind:(kind==='unknown'&&accepted?(external.documentKind||(external.printType==='BOOK'?'book':'unknown')):kind);
   const proposedTitle=accepted?external.title:primaryTitle;
   // On an exact Melos code match, never fall back to PDF text for fields absent from the official record.
   const proposedAuthors=exactMelosMatch
