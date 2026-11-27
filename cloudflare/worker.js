@@ -580,10 +580,240 @@ export default {
     }
 
     const pathname = new URL(request.url).pathname;
+    if (pathname === "/catalog/melos" && request.method === "GET") return lookupMelosProduct(request, env, headers);
     if (pathname === "/upload/start" && request.method === "POST") return uploadStart(request, env, headers);
     if (pathname === "/upload/part" && request.method === "PUT") return uploadPart(request, env, headers);
     if (pathname === "/upload/complete" && request.method === "POST") return uploadComplete(request, env, headers);
     if (pathname === "/upload/abort" && request.method === "DELETE") return uploadAbort(request, env, headers);
+
+function normalizeMelosCode(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function decodeMelosHtml(value) {
+  const named = {
+    nbsp: " ", amp: "&", quot: '"', apos: "'", lt: "<", gt: ">",
+    ndash: "–", mdash: "—", hellip: "…", times: "×", deg: "°",
+    acute: "´", eacute: "é", Eacute: "É", aacute: "á", Aacute: "Á",
+    iacute: "í", Iacute: "Í", oacute: "ó", Oacute: "Ó", uacute: "ú",
+    Uacute: "Ú", ntilde: "ñ", Ntilde: "Ñ",uuml: "ü", Uuml: "Ü"
+  };
+  return String(value || "").replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
+    if (entity[0] === "#") {
+      const hex = entity[1]?.toLowerCase() === "x";
+      const code = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+      try { return Number.isFinite(code) ? String.fromCodePoint(code) : match; } catch { return match; }
+    }
+    return named[entity] ?? match;
+  });
+}
+
+function melosHtmlText(value) {
+  return decodeMelosHtml(String(value || "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<br\b[^>]*>/gi, "\n")
+    .replace(/<\/(?:p|li|h[1-6]|div|tr|td|th|section|article|ul|ol|header|footer|main|aside)>/gi, "\n")
+    .replace(/<[^>]*>/g, " "))
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
+function melosNormLabel(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function melosReadRows(html) {
+  const rows = [];
+  const rowPattern = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let row;
+  while ((row = rowPattern.exec(html))) {
+    const cells = [];
+    const cellPattern = /<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/gi;
+    let cell;
+    while ((cell = cellPattern.exec(row[1]))) cells.push(melosHtmlText(cell[1]));
+    if (cells.length >= 2 && cells[0] && cells[1]) rows.push({ label: cells[0], value: cells.slice(1).join(" · ") });
+  }
+  return rows;
+}
+
+function melosReadField(lines, labels) {
+  const wanted = new Set(labels.map(melosNormLabel));
+  for (let i = 0; i < lines.length; i++) {
+    const line = String(lines[i] || "").trim();
+    const colon = line.indexOf(":");
+    if (colon >= 0 && wanted.has(melosNormLabel(line.slice(0, colon)))) return line.slice(colon + 1).trim();
+    if (wanted.has(melosNormLabel(line))) {
+      for (let next = i + 1; next < lines.length; next++) {
+        if (String(lines[next] || "").trim()) return String(lines[next]).trim();
+      }
+    }
+  }
+  return "";
+}
+
+function melosTagLinks(html) {
+  const tags = [];
+  const pattern = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let match;
+  while ((match = pattern.exec(html))) {
+    const href = (match[1].match(/\bhref\s*=\s*["']([^"']+)["']/i) || [])[1] || "";
+    if (/\/(?:etiqueta-producto|product-tag)\//i.test(href)) {
+      const value = melosHtmlText(match[2]);
+      if (value && !tags.includes(value)) tags.push(value);
+    }
+  }
+  return tags.slice(0, 40);
+}
+
+function melosProductLinks(html) {
+  const links = [];
+  const seen = new Set();
+  const pattern = /\b(?:href|data-product_permalink)\s*=\s*["']([^"']+)["']/gi;
+  let match;
+  while ((match = pattern.exec(html))) {
+    const raw = decodeMelosHtml(match[1]);
+    let url;
+    try { url = new URL(raw, "https://melos.com.ar"); } catch { continue; }
+    if (url.origin !== "https://melos.com.ar" || !/^\/producto\/[^/]+\/?$/i.test(url.pathname)) continue;
+    url.search = "";
+    url.hash = "";
+    const canonical = url.href.replace(/\/?$/, "/");
+    if (!seen.has(canonical)) { seen.add(canonical); links.push(canonical); }
+    if (links.length >= 12) break;
+  }
+  return links;
+}
+
+function melosExtractProduct(html, productUrl, expectedCode) {
+  const text = melosHtmlText(html);
+  const lines = text.split("\n").map(x => x.trim()).filter(Boolean);
+  const rows = melosReadRows(html);
+  const rowValues = labels => {
+    const wanted = new Set(labels.map(melosNormLabel));
+    return rows.filter(row => wanted.has(melosNormLabel(row.label))).map(row => row.value).filter(Boolean);
+  };
+  const value = (labels, lineLabels = labels) =>
+    rowValues(labels)[0] || melosReadField(lines, lineLabels);
+  const heading = (html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i) || [])[1] || "";
+  const title = melosHtmlText(heading) || melosHtmlText((html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "");
+  const author = value(["Autor/Marca", "Autor", "Marca"]);
+  const instrument = value(["Instrumento"]);
+  const productCode = value(["Cod", "Código"]);
+  if (normalizeMelosCode(productCode) !== expectedCode) return null;
+
+  const tagsText = melosReadField(lines, ["Tags", "Etiquetas"]);
+  const tags = melosTagLinks(html);
+  if (!tags.length && tagsText) tags.push(tagsText);
+  const barcode = value(["Cod de Barras", "Código de Barras", "Barcode", "EAN"]);
+  const collaborators = rowValues(["Colaboradores"])
+    .flatMap(x => x.split(/\s*[;,]\s*/)).map(x => x.trim()).filter(Boolean);
+  const pageCount = value(["Cantidad de paginas", "Cantidad de páginas", "Páginas"]);
+  const attributes = rows.map(row => ({ label: row.label, value: row.value }));
+  const shippingWeight = (text.match(/\bPeso\s+(\d+(?:[.,]\d+)?\s*kg)\b/i) || [])[1] || "";
+  const dimensions = (text.match(/\bDimensiones\s+([0-9.,\s×x]+(?:cm|mm)?)\b/i) || [])[1]?.trim() || "";
+  const price = (html.match(/<p\b[^>]*class=["'][^"']*price[^"']*["'][^>]*>([\s\S]*?)<\/p>/i) || [])[1] ||
+    (html.match(/<span\b[^>]*class=["'][^"']*woocommerce-Price-amount[^"']*["'][^>]*>([\s\S]*?)<\/span>/i) || [])[1] || "";
+  const stock = (text.match(/\b(\d+)\s+disponibles?\b/i) || [])[0] || "";
+
+  return {
+    title: title.slice(0, 300),
+    author: author.slice(0, 300),
+    instrument: instrument.slice(0, 120),
+    code: productCode,
+    tagsText: tagsText.slice(0, 500),
+    tags,
+    publisher: "Ediciones Melos",
+    barcode: barcode.slice(0, 80),
+    shippingWeight: shippingWeight.slice(0, 40),
+    dimensions: dimensions.slice(0, 80),
+    collaborators: [...new Set(collaborators)].slice(0, 30),
+    editionWeight: value(["Peso"]).slice(0, 80),
+    height: value(["Alto"]).slice(0, 40),
+    width: value(["Ancho"]).slice(0, 40),
+    countryOfOrigin: value(["Pais de origen", "País de origen"]).slice(0, 100),
+    priceLetter: value(["Letra-Precio", "Letra Precio"]).slice(0, 40),
+    accessories: value(["Accesorios"]).slice(0, 200),
+    editionPageCount: pageCount.slice(0, 80),
+    price: melosHtmlText(price).slice(0, 80),
+    stock: stock.slice(0, 80),
+    attributes,
+    url: productUrl
+  };
+}
+
+async function lookupMelosProduct(request, env, headers) {
+  const auth = await requireAdmin(request, env, headers);
+  if (auth.response) return auth.response;
+  const url = new URL(request.url);
+  const suppliedCode = String(url.searchParams.get("code") || "").trim().toUpperCase();
+  const normalized = normalizeMelosCode(suppliedCode);
+  if (!/^(?:BA|MEL)\d{3,8}$/.test(normalized)) {
+    return jsonReply({ error: "Invalid Melos product code. BA and MEL codes are required." }, 400, headers);
+  }
+  const searchUrl = new URL("https://melos.com.ar/");
+  searchUrl.searchParams.set("s", normalized.toLowerCase());
+  let searchResponse;
+  try {
+    searchResponse = await fetch(searchUrl.toString(), {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "es-AR,es;q=0.9,en;q=0.6",
+        "User-Agent": "Mozilla/5.0 (compatible; MiBibliotecaDigital/1.0; +https://mibibliotecadigital.github.io/)"
+      },
+      signal: AbortSignal.timeout(12000)
+    });
+  } catch (error) {
+    console.error("Melos search request failed", error);
+    return jsonReply({ error: "Melos search request failed.", detail: String(error?.message || error).slice(0, 240) }, 502, headers);
+  }
+  if (!searchResponse.ok) {
+    return jsonReply({ error: "Melos search returned HTTP " + searchResponse.status, upstreamStatus: searchResponse.status }, 502, headers);
+  }
+  const searchHtml = await searchResponse.text();
+  if (searchHtml.length > 5 * 1024 * 1024) return jsonReply({ error: "Melos search response is too large." }, 502, headers);
+  const productUrls = melosProductLinks(searchHtml);
+  const checked = [];
+  for (const productUrl of productUrls.slice(0, 8)) {
+    try {
+      const productResponse = await fetch(productUrl, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "Accept-Language": "es-AR,es;q=0.9,en;q=0.6",
+          "User-Agent": "Mozilla/5.0 (compatible; MiBibliotecaDigital/1.0; +https://mibibliotecadigital.github.io/)",
+          Referer: searchUrl.toString()
+        },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!productResponse.ok) {
+        checked.push({ url: productUrl, status: productResponse.status });
+        continue;
+      }
+      const html = await productResponse.text();
+      if (html.length > 5 * 1024 * 1024) continue;
+      const product = melosExtractProduct(html, productUrl, normalized);
+      if (product) {
+        return jsonReply({ match: true, query: searchUrl.toString(), checked: checked.length + 1, product }, 200, headers);
+      }
+      checked.push({ url: productUrl, status: "code-mismatch" });
+    } catch (error) {
+      checked.push({ url: productUrl, status: String(error?.message || error).slice(0, 160) });
+    }
+  }
+  return jsonReply({
+    match: false,
+    code: suppliedCode,
+    query: searchUrl.toString(),
+    productCandidates: productUrls.length,
+    checked: checked.slice(0, 8)
+  }, 200, headers);
+}
+
     if (pathname === "/admin/reconcile-storage" && request.method === "POST") {
       const auth = await requireAdmin(request, env, headers);
       if (auth.response) return auth.response;
