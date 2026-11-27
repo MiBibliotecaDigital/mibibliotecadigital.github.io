@@ -7,7 +7,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
  * only its SHA-256 digest is. This route expires automatically.
  */
 const REVIEW_TOKEN_SHA256 = "d7bc9ced9dce3c5638c13c711ebf6aac694bd622fc8770bec6bd66264d3a60dd";
-const REVIEW_EXPIRES_AT = 1795766185;
+const REVIEW_EXPIRES_AT = 1795761077;
 const REVIEW_FILES = new Map([
   ["5ae9b7c6-a63c-4ed9-8ab7-cad72264dad7", "library/7ee04846-1fc4-4525-b776-78def5db1cc3.pdf"],
   ["888dd553-5f58-4364-81cd-ccbd70ce507f", "library/072a5bda-43a3-4b10-9ca3-db123e3a6366.pdf"],
