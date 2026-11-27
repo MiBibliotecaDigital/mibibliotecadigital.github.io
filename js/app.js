@@ -19,7 +19,7 @@ async function loadUser(u){let {data:p,error}=await db.from('profiles').select('
 function nav(p,t){return '<button class="nav '+(page===p?'active':'')+'" data-page="'+p+'">'+t+'</button>'}
 function card(b){return '<article class="book '+(viewMode==='list'?'book-list-item':'')+'"><div class="cover '+b.tone+'"><small>PDF</small><strong>'+esc(b.title)+'</strong><span>'+esc(b.author||'Autor no indicado')+'</span></div><div class="info"><em>'+esc(b.category)+'</em><h3>'+esc(b.title)+'</h3><p>'+esc(b.author||'Autor no indicado')+' · '+esc(b.year||'Año sin indicar')+(b.pages&&b.pages!=='—'?' · '+esc(b.pages)+' págs.':'')+'</p><p class="book-tags">'+(b.tags||[]).map(t=>'<span>'+esc(t)+'</span>').join('')+'</p><footer><button class="fav" data-fav="'+esc(b.id)+'">'+(favs.has(b.id)?'♥':'♡')+'</button><small>'+esc(b.size)+'</small><button data-open="'+esc(b.id)+'">Abrir PDF</button>'+(role==='admin'?'<button class="small-action" data-edit-book="'+esc(b.id)+'">Editar</button><button class="small-action danger" data-delete-book="'+esc(b.id)+'">Eliminar</button>':'')+'</footer></div></article>'}
 function filtered(){let out=books.filter(b=>(page!=='favorites'||favs.has(b.id))&&(!query||(b.title+' '+b.author+' '+b.category+' '+(b.tags||[]).join(' ')).toLowerCase().includes(query.toLowerCase()))&&(!filterCollection||b.collectionId===filterCollection)&&(!filterCategory||b.category===filterCategory||(b.tags||[]).includes(filterCategory)));out.sort((a,b)=>{if(sortBy==='title'){const c=(a.title||'').localeCompare(b.title||'','es',{sensitivity:'base'});return sortDir==='asc'?c:-c}const av=sortBy==='year'?Number(a.year):Number(a.pageCount),bv=sortBy==='year'?Number(b.year):Number(b.pageCount),am=!Number.isFinite(av)||av<=0,bm=!Number.isFinite(bv)||bv<=0;if(am!==bm)return am?1:-1;const c=av-bv;return sortDir==='asc'?c:-c});return out}
-function uploadPage(){return '<div class="heading"><div><h1>Subir PDFs</h1><p>Seleccioná varios archivos. Se guardan como borradores privados y se analizan automáticamente.</p></div></div><form class="panel upload-panel" id="upload-form"><label class="upload-drop" id="upload-drop" for="upload-files"><strong>Elegí o arrastrá varios archivos PDF</strong><span>Sin límite artificial de archivos por tanda · 2 GiB por archivo</span><input id="upload-files" name="files" type="file" accept=".pdf,application/pdf" multiple required></label><div id="upload-file-list" class="upload-file-list"><span class="muted">Todavía no seleccionaste archivos.</span></div><div class="upload-note"><b>Etapa 1 · Guardado:</b> los PDFs se suben y registran en el catálogo como borradores privados. La subida usa hasta 3 archivos simultáneos. Un fallo posterior de metadatos no elimina el archivo.</div><div class="upload-note"><b>Etapa 2 · Metadatos:</b> al terminar todas las cargas, Se usa el nombre del archivo, se inspeccionan hasta 18 páginas de muestra distribuidas por todo el PDF. Se extrae texto y se buscan identificadores y líneas repetidas en encabezados y pies; no se ejecuta OCR. Se puede interrumpir y reanudar desde Administrar libros; los PDFs ya guardados permanecen disponibles.</div><div class="upload-note">Al terminar, se extraen automáticamente propiedades y texto del PDF. Según el tipo documental, se consultan Google Books y Open Library para libros, Crossref para DOI e ISSN, la Biblioteca del Congreso para ISMN e IMSLP para determinados números editoriales BA. Las coincidencias se puntúan y las dudosas quedan para revisión; también se generan etiquetas a partir de materias y datos extraídos. Cada ficha queda como borrador privado para que puedas revisarla en Administrar libros. Los archivos escaneados sin texto pueden necesitar corrección manual.</div><div class="upload-note">La detección de duplicados compara huellas exactas con documentos de esta biblioteca y coincidencias bibliográficas por ISBN o título/autor. No rastrea todos los sitios de Internet.</div><button class="primary" id="upload-submit" type="submit" disabled>Subir PDFs seleccionados</button><div id="upload-results" class="upload-results" aria-live="polite"></div></form>'}
+function uploadPage(){return '<div class="heading"><div><h1>Subir PDFs</h1><p>Seleccioná varios archivos. Se guardan como borradores privados y se analizan automáticamente.</p></div></div><form class="panel upload-panel" id="upload-form"><label class="upload-drop" id="upload-drop" for="upload-files"><strong>Elegí o arrastrá varios archivos PDF</strong><span>Sin límite artificial de archivos por tanda · 2 GiB por archivo</span><input id="upload-files" name="files" type="file" accept=".pdf,application/pdf" multiple required></label><div id="upload-file-list" class="upload-file-list"><span class="muted">Todavía no seleccionaste archivos.</span></div><div class="upload-note"><b>Etapa 1 · Guardado:</b> los PDFs se suben y registran en el catálogo como borradores privados. La subida usa hasta 3 archivos simultáneos. Un fallo posterior de metadatos no elimina el archivo.</div><div class="upload-note"><b>Etapa 2 · Metadatos:</b> al terminar todas las cargas, Se usa el nombre del archivo, se inspeccionan hasta 18 páginas de muestra distribuidas por todo el PDF. Se extrae texto y se buscan identificadores y líneas repetidas en encabezados y pies; no se ejecuta OCR. Se puede interrumpir y reanudar desde Administrar libros; los PDFs ya guardados permanecen disponibles.</div><div class="upload-note">Al terminar, se extraen automáticamente propiedades y texto del PDF. Según el tipo documental, se consultan Google Books y Open Library para libros, Crossref para DOI e ISSN, la Biblioteca del Congreso para ISMN y RISM Online para números editoriales: se verifica el código en MARC 028 y se recuperan ISBN (MARC 020) e ISMN (MARC 024). IMSLP queda como alternativa para algunos códigos BA. Las coincidencias se puntúan y las dudosas quedan para revisión; también se generan etiquetas a partir de materias y datos extraídos. Cada ficha queda como borrador privado para que puedas revisarla en Administrar libros. Los archivos escaneados sin texto pueden necesitar corrección manual.</div><div class="upload-note">La detección de duplicados compara huellas exactas con documentos de esta biblioteca y coincidencias bibliográficas por ISBN o título/autor. No rastrea todos los sitios de Internet.</div><button class="primary" id="upload-submit" type="submit" disabled>Subir PDFs seleccionados</button><div id="upload-results" class="upload-results" aria-live="polite"></div></form>'}
 function renderUploadSelection(){
   const list=document.querySelector('#upload-file-list'),button=document.querySelector('#upload-submit');
   if(!list||!button)return;
@@ -460,7 +460,7 @@ async function uploadMultiple(e){
   if(success||recovered.recovered)void runMetadataQueue(null,session.access_token);
 }
 function pendingPage(){
-  return '<div class="heading"><div><h1>Metadatos pendientes</h1><p>Los documentos de esta lista están guardados en privado y todavía no aparecen para los lectores.</p></div><span class="tag">'+pendingDocs.length+' pendientes</span></div><div class="notice metadata-help"><b>La ficha se analiza automáticamente</b><span>Se parte del nombre original del archivo, se leen hasta tres páginas para verificar ISBN y datos editoriales, y se consultan Google Books y Open Library para completar los metadatos. Son sugerencias: revisalas antes de publicar. Los PDFs escaneados sin capa de texto pueden necesitar OCR adicional.</span></div>'+(pendingDocs.length?'<div class="panel"><table class="pending-table"><tr><th>Documento (nombre provisional)</th><th>Tamaño</th><th>Estado</th><th></th></tr>'+pendingDocs.map(d=>'<tr><td>'+esc(d.title)+'</td><td>'+esc(d.size)+'</td><td><span class="pending-tag">Privado</span></td><td><button class="small-action" data-analyze-doc="'+esc(d.id)+'">Analizar PDF</button><button class="small-action" data-edit-doc="'+esc(d.id)+'">Editar ficha</button><button class="small-action" data-open="'+esc(d.id)+'">Vista previa</button><button class="small-action danger" data-delete-book="'+esc(d.id)+'">Eliminar</button></td></tr>').join('')+'</table>':'<div class="panel empty-state">No hay fichas pendientes. Cuando subas PDFs, aparecerán aquí.')+'</div>';
+  return '<div class="heading"><div><h1>Metadatos pendientes</h1><p>Los documentos de esta lista están guardados en privado y todavía no aparecen para los lectores.</p></div><span class="tag">'+pendingDocs.length+' pendientes</span></div><div class="notice metadata-help"><b>La ficha se analiza automáticamente</b><span>Se parte del nombre original del archivo y se inspeccionan hasta 18 páginas distribuidas por el PDF para extraer identificadores, números editoriales y datos bibliográficos. Según el tipo documental se consultan catálogos externos, incluidos RISM Online para números editoriales y recuperación de ISBN/ISMN. Son sugerencias: revisalas antes de publicar. Los PDFs escaneados sin capa de texto pueden necesitar OCR adicional.</span></div>'+(pendingDocs.length?'<div class="panel"><table class="pending-table"><tr><th>Documento (nombre provisional)</th><th>Tamaño</th><th>Estado</th><th></th></tr>'+pendingDocs.map(d=>'<tr><td>'+esc(d.title)+'</td><td>'+esc(d.size)+'</td><td><span class="pending-tag">Privado</span></td><td><button class="small-action" data-analyze-doc="'+esc(d.id)+'">Analizar PDF</button><button class="small-action" data-edit-doc="'+esc(d.id)+'">Editar ficha</button><button class="small-action" data-open="'+esc(d.id)+'">Vista previa</button><button class="small-action danger" data-delete-book="'+esc(d.id)+'">Eliminar</button></td></tr>').join('')+'</table>':'<div class="panel empty-state">No hay fichas pendientes. Cuando subas PDFs, aparecerán aquí.')+'</div>';
 }
 
 function editDocumentMetadata(id){
@@ -471,7 +471,7 @@ function editDocumentMetadata(id){
  const evidence=d.metadataEvidence||{},detectedIds=(evidence.identifiers||candidate?.evidence?.identifiersFound||d.bibliographicIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value);
  const repeatedSummary=(evidence.repeatedLines||candidate?.evidence?.repeatedLines||[]).slice(0,5).map(x=>x.text+' (págs. '+(x.pages||[]).join(', ')+')').join(' · ');
  const evidenceBox=(detectedIds.length||repeatedSummary||evidence.sampledPages?.length)?'<div class="notice metadata-suggestion"><b>Evidencia extraída del PDF</b><small>Páginas examinadas: '+esc((evidence.sampledPages||candidate?.evidence?.sampledPages||[]).join(', ')||'No disponible')+' · '+esc(evidence.pageCount||'')+' páginas totales</small>'+(detectedIds.length?'<small>Identificadores: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+'</div>':'';
- const box=candidate?'<div class="notice metadata-suggestion"><b>Sugerencia de '+esc(candidate.source||'catálogo')+' · '+esc(candidate.score||0)+'/100</b><p>'+esc(candidate.title||'Sin título')+' · '+esc((candidate.authors||[]).join(', ')||'Autor no identificado')+' · '+esc(candidate.year||'Año sin indicar')+'</p><small>'+esc(candidateIdText)+' · Editorial: '+esc(candidate.publisher||'No informada')+'</small>'+(detectedIds.length?'<small>Detectado en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+'<button type="button" class="secondary" id="use-catalog-candidate">Usar esta sugerencia en el formulario</button></div>':'';
+ const box=candidate?'<div class="notice metadata-suggestion"><b>Sugerencia de '+esc(candidate.source||'catálogo')+' · '+esc(candidate.score||0)+'/100</b><p>'+esc(candidate.title||'Sin título')+' · '+esc((candidate.authors||[]).join(', ')||'Autor no identificado')+' · '+esc(candidate.year||'Año sin indicar')+'</p><small>'+esc(candidateIdText)+' · Editorial: '+esc(candidate.publisher||'No informada')+'</small>'+(detectedIds.length?'<small>Detectado en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+(candidate.sourceUrl?'<small><a href="'+esc(candidate.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro RISM ↗</a></small>':'')+'<button type="button" class="secondary" id="use-catalog-candidate">Usar esta sugerencia en el formulario</button></div>':'';
  m.innerHTML='<section class="modal metadata-modal"><header><b>Ficha bibliográfica</b><button id="close" type="button">Cerrar ×</button></header>'+box+evidenceBox+'<form id="metadata-form"><label>Título<input name="title" maxlength="300" required value="'+esc(d.title)+'"></label><label>Autor/es<input name="authors" maxlength="1000" value="'+esc(d.authors.join(', '))+'" placeholder="Separar varios autores con coma"></label><div class="upload-grid"><label>Tipo de documento<select name="documentKind">'+[['unknown','Sin clasificar'],['book','Libro'],['academic','Tesis / trabajo académico'],['article','Artículo'],['music_score','Partitura / cancionero'],['periodical','Revista / publicación periódica'],['manual','Manual / guía'],['reference','Obra de referencia'],['other','Otro documento']].map(([v,t])=>'<option value="'+v+'" '+((d.documentKind||'unknown')===v?'selected':'')+'>'+t+'</option>').join('')+'</select></label><label>Categoría<input name="category" maxlength="100" value="'+esc(d.category)+'" required></label><label>Año de publicación<input name="publicationYear" type="number" min="1000" max="2100" value="'+esc(d.year)+'" placeholder="Opcional"></label><label>Colección<select name="collectionId"><option value="">Sin colección</option>'+collections.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===d.collectionId?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label><label>Cantidad de páginas<input name="pageCount" type="number" min="1" max="100000" value="'+esc(d.pageCount||'')+'" placeholder="Opcional"></label><label>ISBN<input name="isbn" maxlength="32" value="'+esc(d.isbn||'')+'"></label><label>Editorial<input name="publisher" maxlength="200" value="'+esc(d.publisher||'')+'"></label></div><label>Otros identificadores bibliográficos<textarea name="bibliographicIdentifiers" rows="4" maxlength="2000" placeholder="ISSN: 1234-567X&#10;DOI: 10.xxxx/xxxxx&#10;ISMN: 9790...&#10;Número editorial / de plancha: BA 11111">'+esc(metadataFormatIdentifiers(d.bibliographicIdentifiers||[]))+'</textarea><small>Un identificador por línea. Se admiten ISBN, ISSN, DOI, ISMN, ISWC, OCLC y números editoriales o de plancha.</small></label><label>Temas / etiquetas<input name="tags" maxlength="1000" value="'+esc((d.tags||[]).join(', '))+'" placeholder="guitarra, armonía, piano…"></label><label>Descripción<textarea name="description" rows="4" maxlength="3000">'+esc(d.description)+'</textarea></label><p class="muted">Origen: '+esc(metadataSourceLabel(d.metadataSource||'filename'))+' · Coincidencia: '+esc(metadataMatchLabel(d.metadataMatchStatus,d.metadataConfidence))+' · Tipo probable: '+esc(metadataKindLabel(d.documentKind))+'</p><div class="metadata-actions"><button class="secondary" id="save-private" type="button">'+(published?'Guardar cambios':'Guardar sin publicar')+'</button><button class="primary" id="publish-toggle" type="button">'+(published?'Guardar y retirar del catálogo':'Guardar y publicar')+'</button></div></form></section>';
  document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.onclick=e=>{if(e.target===m)m.remove()};
  const use=m.querySelector('#use-catalog-candidate');if(use)use.onclick=()=>{
@@ -912,7 +912,9 @@ function metadataRankCandidate(candidate,context){
  const authorMatch=metadataAuthorsMatch(context.authors,candidate.authors||[]);
  const specific=metadataTitleIsSpecific(context.title)&&metadataTitleIsSpecific(candidate.title);
  let score;
- if(identifierMatch){
+ if(identifierMatch?.type==='publisher_number'){
+  score=titleScore>=.6?100:titleScore>=.35?96:metadataTitleIsSpecific(context.title)?86:92;
+ }else if(identifierMatch){
   const compatible=!metadataTitleIsSpecific(context.title)||titleScore>=.35;
   score=compatible?(titleScore>=.6?100:92):38;
  }else{
@@ -975,6 +977,68 @@ async function locLookupIdentifier(identifier){
   return{title,authors:contributor.map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:[],identifiers:[identifier],publisher:String(item.publisher||''),year:Number(year)||null,description:metadataCleanDescription(item.description||''),tags:(item.subject||[]).flatMap(x=>String(x).split(/[;|]/)).map(x=>x.trim()).filter(Boolean),pageCount:null,source:'Library of Congress · ISMN',printType:'MUSIC',documentKind:'music_score',sourceId:item.id||item.url||null};
  }).filter(x=>metadataTitleUsable(x.title));
 }
+function metadataRismItemUrl(item){
+ const raw=item?.['@id']||item?.id||item?.url||item?.uri||item?.resource||item?.href;
+ const value=typeof raw==='object'?(raw?.['@id']||raw?.uri||raw?.url||raw?.id):raw;
+ if(!value)return null;
+ if(/^\d+$/.test(String(value)))return 'https://rism.online/sources/'+String(value);
+ try{const url=new URL(String(value),'https://rism.online');return url.origin==='https://rism.online'&&/^\/sources\/\d+\/?$/.test(url.pathname)?url.href:null}catch{return null}
+}
+function metadataRismSearchItems(payload){
+ const values=payload?.items||payload?.['@graph']||payload?.itemListElement||payload?.['hydra:member']||[];
+ return Array.isArray(values)?values.map(x=>x?.item||x?.result||x).filter(x=>x&&typeof x==='object'):[];
+}
+function metadataRismFields(xml,tag,code='a'){
+ return Array.from(xml.getElementsByTagNameNS('*','datafield')).filter(x=>x.getAttribute('tag')===tag)
+  .flatMap(field=>Array.from(field.getElementsByTagNameNS('*','subfield')).filter(x=>x.getAttribute('code')===code)
+  .map(x=>String(x.textContent||'').trim()).filter(Boolean));
+}
+async function rismLookupPublisherNumber(identifier){
+ if(identifier?.type!=='publisher_number'||!identifier.value)return[];
+ const expected=metadataNormalizeIdentifier('publisher_number',identifier.value),compact=expected.replace(/[^0-9A-Z]/g,'');
+ const queries=[...new Set([String(identifier.value).trim(),expected.replace(/[-./]/g,' ').replace(/\s+/g,' ').trim(),compact])].filter(Boolean);
+ const seen=new Set(),candidates=[];
+ for(const query of queries){
+  const params=new URLSearchParams({mode:'sources',q:query,rows:'20'});
+  const response=await fetch('https://rism.online/search?'+params,{headers:{Accept:'application/ld+json'},signal:AbortSignal.timeout(10000)});
+  if(!response.ok)throw new Error('RISM Online HTTP '+response.status);
+  const payload=await response.json(),items=metadataRismSearchItems(payload);
+  for(const item of items.slice(0,12)){
+   const sourceUrl=metadataRismItemUrl(item);if(!sourceUrl||seen.has(sourceUrl))continue;seen.add(sourceUrl);
+   let recordResponse;
+   try{recordResponse=await fetch(sourceUrl,{headers:{Accept:'application/marcxml+xml'},signal:AbortSignal.timeout(8000)})}
+   catch(error){console.info('RISM MARC record unavailable:',error?.message||error);continue}
+   if(!recordResponse.ok)continue;
+   const xml=new DOMParser().parseFromString(await recordResponse.text(),'application/xml');
+   if(xml.querySelector('parsererror'))continue;
+   const publisherNumbers=metadataRismFields(xml,'028','a');
+   const exactMatch=publisherNumbers.some(value=>{const normalized=metadataNormalizeIdentifier('publisher_number',value);return normalized===expected||normalized.replace(/[^0-9A-Z]/g,'')===compact});
+   if(!exactMatch)continue;
+   const title=metadataTitleClean([...metadataRismFields(xml,'245','a'),...metadataRismFields(xml,'245','b')].join(' '));
+   if(!metadataTitleUsable(title))continue;
+   const authorValues=[100,110,700,710].flatMap(tag=>metadataRismFields(xml,String(tag),'a'));
+   const authors=[...new Set(authorValues.map(metadataAuthorClean).filter(metadataAuthorUsable))].slice(0,10);
+   const publisher=[...metadataRismFields(xml,'264','b'),...metadataRismFields(xml,'260','b')].find(Boolean)||'';
+   const date=[...metadataRismFields(xml,'264','c'),...metadataRismFields(xml,'260','c')].join(' ');
+   const year=Number((date.match(/(?:18|19|20)\d{2}/)||[])[0])||null;
+   const isbns=[...new Set(metadataRismFields(xml,'020','a').map(metadataValidIsbn).filter(Boolean))];
+   const field024=Array.from(xml.getElementsByTagNameNS('*','datafield')).filter(x=>x.getAttribute('tag')==='024');
+   const ismns=[...new Set(field024.filter(field=>field.getAttribute('ind1')==='2').flatMap(field=>
+    Array.from(field.getElementsByTagNameNS('*','subfield')).filter(x=>x.getAttribute('code')==='a')
+     .map(x=>metadataValidIsmn(x.textContent||'')).filter(Boolean)))];
+   const identifiers=[
+    {type:'publisher_number',value:identifier.value,normalized:expected,source:'RISM Online · MARC 028',pages:[],occurrences:1,confidence:100,sourceRecord:sourceUrl},
+    ...isbns.map(value=>({type:'isbn',value,normalized:value,source:'RISM Online · MARC 020',pages:[],occurrences:1,confidence:100,sourceRecord:sourceUrl})),
+    ...ismns.map(value=>({type:'ismn',value,normalized:metadataNormalizeIdentifier('ismn',value),source:'RISM Online · MARC 024',pages:[],occurrences:1,confidence:100,sourceRecord:sourceUrl}))
+   ];
+   candidates.push({title,authors,isbns,identifiers,publisher,year,description:'Registro musical de RISM Online. Número editorial verificado en el campo MARC 028.',
+    tags:['Música','Partituras'],pageCount:null,source:'RISM Online · número editorial (MARC 028)',
+    sourceId:sourceUrl.split('/').filter(Boolean).pop(),sourceUrl,publisherNumber:identifier.value,printType:'MUSIC',documentKind:'music_score'});
+  }
+  if(candidates.length)break;
+ }
+ return candidates;
+}
 async function imslpLookupPublisherNumber(identifier){
  if(identifier?.type!=='publisher_number'||!/^BA\s*\d/i.test(identifier.value))return[];
  const params=new URLSearchParams({action:'query',list:'search',srsearch:'"'+identifier.value+'"',srnamespace:'0',srlimit:'8',format:'json',origin:'*'});
@@ -997,7 +1061,10 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
    let candidates=[];
    if(identifier.type==='doi'||identifier.type==='issn')candidates=await crossrefLookupIdentifier(identifier);
    else if(identifier.type==='ismn')candidates=await locLookupIdentifier(identifier);
-   else if(identifier.type==='publisher_number')candidates=await imslpLookupPublisherNumber(identifier);
+   else if(identifier.type==='publisher_number'){
+    try{candidates=await rismLookupPublisherNumber(identifier)}catch(error){console.info('RISM publisher-number lookup unavailable:',error?.message||error)}
+    if(!candidates.length)candidates=await imslpLookupPublisherNumber(identifier);
+   }
    for(const context of contexts.length?contexts:[{title:'',authors:[]}])scoreCandidates(candidates,context);
    if(best&&metadataCandidateAccepted(best))return best;
   }catch(error){console.info('Identifier lookup unavailable ('+identifier.type+'):',error?.message||error)}
@@ -1192,10 +1259,11 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const finalKind=kind==='unknown'&&accepted?(external.documentKind||(external.printType==='BOOK'?'book':'unknown')):kind;
   const proposedTitle=accepted?external.title:primaryTitle;
   const proposedAuthors=accepted&&external.authors?.length?external.authors:pdfAuthors;
-  const duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn,bibliographicIdentifiers:identifiers};
+  const persistedIdentifiers=accepted?metadataUniqueIdentifiers([...identifiers,...(external?.identifiers||[])]):identifiers;
+  const duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn,bibliographicIdentifiers:persistedIdentifiers};
   const possibleDuplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
   const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
-  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear}};
+  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear,catalogLookup:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null}};
   if(!manual){
    if(metadataTitleUsable(proposedTitle))updates.title=proposedTitle.slice(0,300);
    if(proposedAuthors.length)updates.authors=proposedAuthors.slice(0,20);
@@ -1208,7 +1276,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
    if(tags.length)updates.tags=tags;
    if(accepted&&external.description&&!d.description)updates.description=external.description;
    if(!d.category||d.category==='General'||accepted||finalKind!=='unknown')updates.category=metadataCategoryFromTags(tags,finalKind);
-   updates.bibliographic_identifiers=identifiers;
+   updates.bibliographic_identifiers=persistedIdentifiers;
    updates.metadata_source=(identifiers.length||pdfPublisher||pdfYear||pageTitle)?'pdf_text':(embeddedTitle||infoAuthor||embeddedTags.length?'embedded':'filename');
    updates.metadata_reviewed=false;
   }else{
