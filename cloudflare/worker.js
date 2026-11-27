@@ -577,6 +577,7 @@ async function deleteLibraryDocument(request, env, headers, documentId) {
     try {
       await env.BIBLIOTECA.delete(document.r2_key);
       await env.BIBLIOTECA.delete("covers/" + documentId + ".jpg");
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
     } catch (error) {
       storageCleanupPending = true;
       console.error("Orphaned private R2 object requires cleanup", { key: document.r2_key, error: String(error) });
