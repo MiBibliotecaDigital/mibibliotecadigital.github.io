@@ -88,3 +88,10 @@
 .duplicate-modal ul{padding-left:20px;line-height:1.6}
 .upload-result-skipped{border-color:#e4d2ad;background:#fffaf0}
 @media(max-width:700px){.books-admin-controls{display:grid;grid-template-columns:1fr}.books-admin-table{min-width:880px}}
+
+/* Independent PDF upload and metadata queues */
+.books-admin-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.metadata-queue-status{margin:12px 0;padding:10px 12px;color:var(--m);background:#f6f8f8;border:1px solid var(--l);border-radius:8px;font-size:12px}
+.books-admin-table td .metadata-state{white-space:nowrap}
+.books-admin-table td small{display:block;max-width:220px;overflow-wrap:anywhere}
+@media(max-width:700px){.books-admin-actions{display:grid;grid-template-columns:1fr}.books-admin-actions button{width:100%}}
