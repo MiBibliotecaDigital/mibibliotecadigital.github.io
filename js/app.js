@@ -1647,7 +1647,8 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const exactIsbnMatch=accepted&&external?.score===100&&matchedIdentifierType==='isbn'&&
    external.titleSimilarity>=.92&&metadataTitleIsSpecific(primaryTitle)&&
    metadataTitleIsSpecific(external.title);
-  const completeIsbnMetadata=exactIsbnMatch&&proposedAuthors.length>0&&
+  const catalogAuthorConsistent=!external?.authors?.length||!pdfAuthors.length||external.authorMatch;
+  const completeIsbnMetadata=exactIsbnMatch&&proposedAuthors.length>0&&catalogAuthorConsistent&&
    !!(external.publisher||pdfPublisher||d.publisher)&&
    !!(external.year||pdfYear||d.year||d.publication_year)&&
    !!(isbn||external.isbns?.length)&&
