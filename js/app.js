@@ -470,8 +470,11 @@ function editDocumentMetadata(id){
  const candidateIdText=candidateIds.map(x=>metadataIdentifierLabel(x.type)+': '+x.value).join(' · ')||'Sin identificadores compatibles';
  const evidence=d.metadataEvidence||{},detectedIds=(evidence.identifiers||candidate?.evidence?.identifiersFound||d.bibliographicIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value);
  const repeatedSummary=(evidence.repeatedLines||candidate?.evidence?.repeatedLines||[]).slice(0,5).map(x=>x.text+' (págs. '+(x.pages||[]).join(', ')+')').join(' · ');
- const lookupEvidence=evidence.catalogLookup||null,lookupIds=(lookupEvidence?.recoveredIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value).join(' · ');
- const lookupLine=lookupEvidence?'<small>Catálogo relacionado: '+esc(lookupEvidence.source||'Catálogo externo')+(lookupIds?' · Identificadores: '+esc(lookupIds):'')+(lookupEvidence.sourceUrl?' · <a href="'+esc(lookupEvidence.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro ↗</a>':'')+'</small>':'';
+ const lookupEvidence=evidence.catalogLookup||null,selectedLookup=lookupEvidence?.selected||null,lookupIds=(selectedLookup?.recoveredIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value).join(' · ');
+ const lookupAttempts=(lookupEvidence?.attempts||[]).map(x=>esc(x.source)+': '+(x.error?'error · '+esc(x.error):esc(String(x.results)+' resultado(s)'))).join(' · ');
+ const publisherCode=(evidence.identifiers||d.bibliographicIdentifiers||[]).find(x=>x.type==='publisher_number');
+ const worldcatUrl=publisherCode?'https://search.worldcat.org/search?q='+encodeURIComponent('mn='+String(publisherCode.value).replace(/[^0-9A-Z]/gi,'').toLowerCase()):'';
+ const lookupLine=lookupEvidence?'<small>Consultas externas: '+(lookupAttempts||'Sin consultas registradas')+'</small>'+(selectedLookup?'<small>Coincidencia: '+esc(selectedLookup.source||'Catálogo')+(lookupIds?' · Identificadores recuperados: '+esc(lookupIds):'')+(selectedLookup.sourceUrl?' · <a href="'+esc(selectedLookup.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro ↗</a>':'')+'</small>':'<small>No se encontró una coincidencia exacta en las fuentes automáticas consultadas.</small>')+(worldcatUrl?'<small><a href="'+esc(worldcatUrl)+'" target="_blank" rel="noopener noreferrer">Buscar este número en WorldCat ↗</a></small>':''):'';
  const evidenceBox=(detectedIds.length||repeatedSummary||evidence.sampledPages?.length||lookupEvidence)?'<div class="notice metadata-suggestion"><b>Evidencia extraída del PDF y catálogos</b><small>Páginas examinadas: '+esc((evidence.sampledPages||candidate?.evidence?.sampledPages||[]).join(', ')||'No disponible')+' · '+esc(evidence.pageCount||'')+' páginas totales</small>'+(detectedIds.length?'<small>Identificadores detectados en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+lookupLine+'</div>':'';
  const box=candidate?'<div class="notice metadata-suggestion"><b>Sugerencia de '+esc(candidate.source||'catálogo')+' · '+esc(candidate.score||0)+'/100</b><p>'+esc(candidate.title||'Sin título')+' · '+esc((candidate.authors||[]).join(', ')||'Autor no identificado')+' · '+esc(candidate.year||'Año sin indicar')+'</p><small>'+esc(candidateIdText)+' · Editorial: '+esc(candidate.publisher||'No informada')+'</small>'+(detectedIds.length?'<small>Detectado en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+(candidate.sourceUrl?'<small><a href="'+esc(candidate.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro RISM ↗</a></small>':'')+'<button type="button" class="secondary" id="use-catalog-candidate">Usar esta sugerencia en el formulario</button></div>':'';
  m.innerHTML='<section class="modal metadata-modal"><header><b>Ficha bibliográfica</b><button id="close" type="button">Cerrar ×</button></header>'+box+evidenceBox+'<form id="metadata-form"><label>Título<input name="title" maxlength="300" required value="'+esc(d.title)+'"></label><label>Autor/es<input name="authors" maxlength="1000" value="'+esc(d.authors.join(', '))+'" placeholder="Separar varios autores con coma"></label><div class="upload-grid"><label>Tipo de documento<select name="documentKind">'+[['unknown','Sin clasificar'],['book','Libro'],['academic','Tesis / trabajo académico'],['article','Artículo'],['music_score','Partitura / cancionero'],['periodical','Revista / publicación periódica'],['manual','Manual / guía'],['reference','Obra de referencia'],['other','Otro documento']].map(([v,t])=>'<option value="'+v+'" '+((d.documentKind||'unknown')===v?'selected':'')+'>'+t+'</option>').join('')+'</select></label><label>Categoría<input name="category" maxlength="100" value="'+esc(d.category)+'" required></label><label>Año de publicación<input name="publicationYear" type="number" min="1000" max="2100" value="'+esc(d.year)+'" placeholder="Opcional"></label><label>Colección<select name="collectionId"><option value="">Sin colección</option>'+collections.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===d.collectionId?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label><label>Cantidad de páginas<input name="pageCount" type="number" min="1" max="100000" value="'+esc(d.pageCount||'')+'" placeholder="Opcional"></label><label>ISBN<input name="isbn" maxlength="32" value="'+esc(d.isbn||'')+'"></label><label>Editorial<input name="publisher" maxlength="200" value="'+esc(d.publisher||'')+'"></label></div><label>Otros identificadores bibliográficos<textarea name="bibliographicIdentifiers" rows="4" maxlength="2000" placeholder="ISSN: 1234-567X&#10;DOI: 10.xxxx/xxxxx&#10;ISMN: 9790...&#10;Número editorial / de plancha: BA 11111">'+esc(metadataFormatIdentifiers(d.bibliographicIdentifiers||[]))+'</textarea><small>Un identificador por línea. Se admiten ISBN, ISSN, DOI, ISMN, ISWC, OCLC y números editoriales o de plancha.</small></label><label>Temas / etiquetas<input name="tags" maxlength="1000" value="'+esc((d.tags||[]).join(', '))+'" placeholder="guitarra, armonía, piano…"></label><label>Descripción<textarea name="description" rows="4" maxlength="3000">'+esc(d.description)+'</textarea></label><p class="muted">Origen: '+esc(metadataSourceLabel(d.metadataSource||'filename'))+' · Coincidencia: '+esc(metadataMatchLabel(d.metadataMatchStatus,d.metadataConfidence))+' · Tipo probable: '+esc(metadataKindLabel(d.documentKind))+'</p><div class="metadata-actions"><button class="secondary" id="save-private" type="button">'+(published?'Guardar cambios':'Guardar sin publicar')+'</button><button class="primary" id="publish-toggle" type="button">'+(published?'Guardar y retirar del catálogo':'Guardar y publicar')+'</button></div></form></section>';
@@ -995,10 +998,12 @@ function metadataRismFields(xml,tag,code='a'){
   .flatMap(field=>Array.from(field.getElementsByTagNameNS('*','subfield')).filter(x=>x.getAttribute('code')===code)
   .map(x=>String(x.textContent||'').trim()).filter(Boolean));
 }
-async function rismLookupPublisherNumber(identifier){
+async function rismLookupPublisherNumber(identifier,contexts=[]){
  if(identifier?.type!=='publisher_number'||!identifier.value)return[];
  const expected=metadataNormalizeIdentifier('publisher_number',identifier.value),compact=expected.replace(/[^0-9A-Z]/g,'');
- const queries=[...new Set([String(identifier.value).trim(),expected.replace(/[-./]/g,' ').replace(/\s+/g,' ').trim(),compact])].filter(Boolean);
+ const codeQueries=[String(identifier.value).trim(),expected.replace(/[-./]/g,' ').replace(/\s+/g,' ').trim(),compact];
+ const titleQueries=(contexts||[]).slice(0,2).map(context=>[context.title,context.authors?.[0]].filter(Boolean).join(' '));
+ const queries=[...new Set([...codeQueries,...titleQueries])].filter(Boolean);
  const seen=new Set(),candidates=[];
  for(const query of queries){
   const params=new URLSearchParams({mode:'sources',q:query,rows:'20'});
@@ -1041,35 +1046,50 @@ async function rismLookupPublisherNumber(identifier){
  }
  return candidates;
 }
-async function imslpLookupPublisherNumber(identifier){
+async function imslpLookupPublisherNumber(identifier,contexts=[]){
  if(identifier?.type!=='publisher_number'||!/^BA\s*\d/i.test(identifier.value))return[];
- const params=new URLSearchParams({action:'query',list:'search',srsearch:'"'+identifier.value+'"',srnamespace:'0',srlimit:'8',format:'json',origin:'*'});
- const response=await fetch('https://imslp.org/api.php?'+params,{signal:AbortSignal.timeout(9000)});
- if(!response.ok)throw new Error('IMSLP HTTP '+response.status);
- const data=await response.json(),results=data?.query?.search||[],needle=String(identifier.normalized||identifier.value).replace(/[^0-9A-Z]/gi,'').toUpperCase();
+ const code=String(identifier.value).trim(),needle=String(identifier.normalized||identifier.value).replace(/[^0-9A-Z]/gi,'').toUpperCase();
+ const queries=[code,...(contexts||[]).slice(0,2).map(x=>[x.title,code].filter(Boolean).join(' '))];
+ const results=[],seen=new Set();
+ for(const query of queries){
+  const params=new URLSearchParams({action:'query',list:'search',srsearch:'"'+query+'"',srnamespace:'0',srlimit:'8',format:'json',origin:'*'});
+  const response=await fetch('https://imslp.org/api.php?'+params,{signal:AbortSignal.timeout(9000)});
+  if(!response.ok)throw new Error('IMSLP HTTP '+response.status);
+  const data=await response.json();
+  for(const item of data?.query?.search||[])if(!seen.has(item.title)){seen.add(item.title);results.push(item)}
+ }
  return results.filter(x=>(String(x.title||'')+' '+String(x.snippet||'')).replace(/<[^>]*>/g,'').replace(/[^0-9A-Z]/gi,'').toUpperCase().includes(needle)).map(item=>{
   const raw=String(item.title||'').replace(/_/g,' '),m=raw.match(/^(.+?)\s*\(([^()]*)\)$/),title=metadataTitleClean(m?m[1]:raw),authorRaw=m?m[2].replace(/,/g,' '):'';
-  return{title,authors:authorRaw?[metadataAuthorClean(authorRaw)]:[],isbns:[],identifiers:[identifier],publisher:'Bärenreiter',year:null,description:metadataCleanDescription(String(item.snippet||'').replace(/<[^>]*>/g,' ')),tags:['Música','Partituras'],pageCount:null,source:'IMSLP · número editorial',printType:'MUSIC',documentKind:'music_score',sourceId:item.title};
+  return{title,authors:authorRaw?[metadataAuthorClean(authorRaw)]:[],isbns:[],identifiers:[identifier],publisher:'',year:null,description:metadataCleanDescription(String(item.snippet||'').replace(/<[^>]*>/g,' ')),tags:['Música','Partituras'],pageCount:null,source:'IMSLP · número editorial',printType:'MUSIC',documentKind:'music_score',sourceId:item.title};
  }).filter(x=>metadataTitleUsable(x.title));
 }
-async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind='unknown'){
+async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind='unknown',trace=[]){
  let best=null;
  const scoreCandidates=(candidates,context)=>{
   const ranked=(candidates||[]).map(x=>metadataRankCandidate(x,{...context,identifiers})).sort((a,b)=>b.score-a.score);
   if(ranked[0]&&(!best||ranked[0].score>best.score))best=ranked[0];
  };
+ const addTrace=(source,identifier,candidates,error=null)=>trace.push({source,identifier:identifier?.value||'',results:(candidates||[]).length,error:error?String(error?.message||error).slice(0,240):null});
  for(const identifier of identifiers){
-  try{
+  if(identifier.type==='publisher_number'){
    let candidates=[];
-   if(identifier.type==='doi'||identifier.type==='issn')candidates=await crossrefLookupIdentifier(identifier);
-   else if(identifier.type==='ismn')candidates=await locLookupIdentifier(identifier);
-   else if(identifier.type==='publisher_number'){
-    try{candidates=await rismLookupPublisherNumber(identifier)}catch(error){console.info('RISM publisher-number lookup unavailable:',error?.message||error)}
-    if(!candidates.length)candidates=await imslpLookupPublisherNumber(identifier);
+   try{candidates=await rismLookupPublisherNumber(identifier,contexts);addTrace('RISM Online',identifier,candidates)}
+   catch(error){addTrace('RISM Online',identifier,[],error);console.info('RISM publisher-number lookup unavailable:',error?.message||error)}
+   if(!candidates.length){
+    try{candidates=await imslpLookupPublisherNumber(identifier,contexts);addTrace('IMSLP',identifier,candidates)}
+    catch(error){addTrace('IMSLP',identifier,[],error);console.info('IMSLP publisher-number lookup unavailable:',error?.message||error)}
    }
    for(const context of contexts.length?contexts:[{title:'',authors:[]}])scoreCandidates(candidates,context);
-   if(best&&metadataCandidateAccepted(best))return best;
-  }catch(error){console.info('Identifier lookup unavailable ('+identifier.type+'):',error?.message||error)}
+  }else{
+   try{
+    let candidates=[];
+    if(identifier.type==='doi'||identifier.type==='issn')candidates=await crossrefLookupIdentifier(identifier);
+    else if(identifier.type==='ismn')candidates=await locLookupIdentifier(identifier);
+    addTrace(identifier.type==='doi'||identifier.type==='issn'?'Crossref':identifier.type==='ismn'?'Library of Congress':'Identifier catalog',identifier,candidates);
+    for(const context of contexts.length?contexts:[{title:'',authors:[]}])scoreCandidates(candidates,context);
+   }catch(error){addTrace('Identifier lookup',identifier,[],error);console.info('Identifier lookup unavailable ('+identifier.type+'):',error?.message||error)}
+  }
+  if(best&&metadataCandidateAccepted(best))return best;
  }
  if(['music_score','periodical','article'].includes(documentKind))return best;
  for(const context of contexts){
@@ -1135,7 +1155,7 @@ function metadataBuildTags({filename='',text='',kind='unknown',catalog=null,acce
   [/\b(blues)\b/,'Blues']
  ];
  for(const [re,tag] of genres)if(re.test(s))add(tag);
- for(const id of identifiers||[])if(id.type==='publisher_number'&&/^BA\b/i.test(id.value))add('Bärenreiter');
+ if(/barenreiter/.test(metadataTextKey(publisher)))add('Bärenreiter');
  return out.slice(0,24);
 }
 function metadataCategoryFromTags(tags,kind){
@@ -1248,7 +1268,7 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const knownPublisher=knownPublishers.find(([re])=>re.test(repeatedText+' '+normalized));
   const pdfPublisher=publisherLine
    ?publisherLine.text.replace(/^(?:editorial|ediciones|publisher|published by)\s*[:\-]?\s*/i,'').replace(/\s+(?:buenos aires|madrid|barcelona|argentina|españa)\b.*$/i,'').trim().slice(0,160)
-   :(knownPublisher?.[1]||(identifiers.some(x=>x.type==='publisher_number'&&/^BA\b/i.test(x.value))?'Bärenreiter':''));
+   :(knownPublisher?.[1]||'');
   const embeddedTags=[...String(info.Keywords||'').split(/[,;|]/),...String(info.Subject||'').split(/[,;|]/)].map(x=>x.trim()).filter(x=>x.length>1&&x.length<80);
   const filenameTitle=metadataTitleIsSpecific(filename.title)&&metadataTitleUsable(filename.title)?filename.title:'';
   const fallbackTitle=metadataTitleIsSpecific(extractedTitle)&&metadataTitleUsable(extractedTitle)?extractedTitle:(metadataTitleIsSpecific(d.title)&&metadataTitleUsable(d.title)?metadataTitleClean(d.title):'');
@@ -1256,7 +1276,8 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const titles=[primaryTitle,extractedTitle].filter((x,i,a)=>x&&metadataTitleIsSpecific(x)&&a.findIndex(y=>metadataTextKey(y)===metadataTextKey(x))===i);
   const kind=metadataDetectDocumentKind(originalFilename||d.title,normalized,null,identifiers);
   const contexts=titles.map(title=>({title,authors:pdfAuthors,isbn,publisher:pdfPublisher,year:pdfYear,identifiers}));
-  const external=await lookupBibliographicCandidate(contexts,identifiers,kind);
+  const lookupTrace=[];
+  const external=await lookupBibliographicCandidate(contexts,identifiers,kind,lookupTrace);
   const accepted=metadataCandidateAccepted(external);
   const finalKind=kind==='unknown'&&accepted?(external.documentKind||(external.printType==='BOOK'?'book':'unknown')):kind;
   const proposedTitle=accepted?external.title:primaryTitle;
@@ -1265,7 +1286,9 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additi
   const duplicateBase={id,title:proposedTitle||d.title,authors:proposedAuthors,isbn:isbn||external?.isbns?.[0]||d.isbn,bibliographicIdentifiers:persistedIdentifiers};
   const possibleDuplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&other.id!==id&&bookDuplicateMatch(duplicateBase,[other]));
   const manual=d.metadataReviewed||d.metadata_reviewed||d.metadataSource==='manual'||d.metadata_source==='manual';
-  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear,catalogLookup:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null}};
+  const publisherId=identifiers.find(x=>x.type==='publisher_number');
+  const worldcatQuery=publisherId?'mn='+String(publisherId.value).replace(/[^0-9A-Z]/gi,'').toLowerCase():null;
+  const updates={page_count:pdf.numPages,metadata_error:null,metadata_checked_at:new Date().toISOString(),metadata_evidence:{pageCount:pdf.numPages,sampledPages,extractedTitle,filenameTitle:filename.title,authors:pdfAuthors,identifiers,repeatedLines,publisher:pdfPublisher,year:pdfYear,catalogLookup:{attempts:lookupTrace,selected:external?{source:external.source,sourceUrl:external.sourceUrl||null,matchedIdentifier:external.identifierMatch||null,recoveredIdentifiers:external.identifiers||[]}:null,noExactMatch:!external,worldcatQuery}}};
   if(!manual){
    if(metadataTitleUsable(proposedTitle))updates.title=proposedTitle.slice(0,300);
    if(proposedAuthors.length)updates.authors=proposedAuthors.slice(0,20);
