@@ -20,5 +20,5 @@ bucket_name = "biblioteca-digital-archivos"
 [secrets]
 required = ["ISBNLAB_API_TOKEN", "GOOGLE_BOOKS_API_KEY"]
 
-# Optional secret: GOOGLE_BOOKS_API_KEY. Add it in Cloudflare Dashboard or
-# with `npx wrangler secret put GOOGLE_BOOKS_API_KEY` to enable Google Books API lookups.
+# Required secret: GOOGLE_BOOKS_API_KEY. Create a key for the Google Books API,
+# then add it in Cloudflare Dashboard or with `npx wrangler secret put GOOGLE_BOOKS_API_KEY`.
