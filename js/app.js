@@ -474,10 +474,14 @@ function editDocumentMetadata(id){
  const melosEvidence=melosCatalog?'<div class="notice metadata-suggestion"><b>Ficha de producto · Ediciones Melos</b>'+melosRows.map(([k,v])=>'<small><b>'+esc(k)+':</b> '+esc(v)+'</small>').join('')+(melosCatalog.price?'<small>Precio de catálogo: '+esc(melosCatalog.price)+'</small>':'')+(melosCatalog.stock?'<small>Disponibilidad: '+esc(melosCatalog.stock)+'</small>':'')+(melosCatalog.url?'<small><a href="'+esc(melosCatalog.url)+'" target="_blank" rel="noopener noreferrer">Abrir ficha oficial ↗</a></small>':'')+'</div>':'';
  const lookupEvidence=evidence.catalogLookup||null,selectedLookup=lookupEvidence?.selected||null,lookupIds=(selectedLookup?.recoveredIdentifiers||[]).map(x=>metadataIdentifierLabel(x.type)+': '+x.value).join(' · ');
  const lookupAttempts=(lookupEvidence?.attempts||[]).map(x=>esc(x.source)+': '+(x.error?'error · '+esc(x.error):esc(x.note||String(x.results)+' resultado(s)'))+(x.url?' · <a href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer">Abrir búsqueda ↗</a>':'')).join(' · ');
- const publisherCode=(evidence.identifiers||d.bibliographicIdentifiers||[]).find(x=>x.type==='publisher_number');
- const worldcatUrl=publisherCode?'https://search.worldcat.org/search?q='+encodeURIComponent('mn='+String(publisherCode.value).replace(/[^0-9A-Z]/gi,'').toLowerCase()):'';
- const lookupLine=lookupEvidence?'<small>Consultas externas: '+(lookupAttempts||'Sin consultas registradas')+'</small>'+(selectedLookup?'<small>Coincidencia: '+esc(selectedLookup.source||'Catálogo')+(lookupIds?' · Identificadores recuperados: '+esc(lookupIds):'')+(selectedLookup.sourceUrl?' · <a href="'+esc(selectedLookup.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro ↗</a>':'')+'</small>':'<small>No se encontró una coincidencia exacta en las fuentes automáticas consultadas.</small>')+(worldcatUrl?'<small><a href="'+esc(worldcatUrl)+'" target="_blank" rel="noopener noreferrer">Buscar este número en WorldCat ↗</a></small>':''):'';
- const evidenceBox=(detectedIds.length||repeatedSummary||evidence.sampledPages?.length||lookupEvidence)?'<div class="notice metadata-suggestion"><b>Evidencia extraída del PDF y catálogos</b><small>Páginas examinadas: '+esc((evidence.sampledPages||candidate?.evidence?.sampledPages||[]).join(', ')||'No disponible')+' · '+esc(evidence.pageCount||'')+' páginas totales</small>'+(detectedIds.length?'<small>Identificadores detectados en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+lookupLine+'</div>':'';
+ const detectedIdentifiers=evidence.identifiers||d.bibliographicIdentifiers||[];
+  const worldcatLinks=detectedIdentifiers.filter(x=>['isbn','publisher_number','oclc'].includes(x.type)).map(identifier=>{
+   const value=String(identifier.value||'').trim();
+   const query=identifier.type==='publisher_number'?'mn='+value.replace(/[^0-9A-Z]/gi,'').toLowerCase():value;
+   return'<small><a href="https://search.worldcat.org/search?q='+encodeURIComponent(query)+'" target="_blank" rel="noopener noreferrer">Buscar '+esc(metadataIdentifierLabel(identifier.type))+': '+esc(value)+' en WorldCat ↗</a></small>';
+  }).join('');
+  const lookupLine=lookupEvidence?'<small>Consultas externas: '+(lookupAttempts||'Sin consultas registradas')+'</small>'+(selectedLookup?'<small>Coincidencia: '+esc(selectedLookup.source||'Catálogo')+(lookupIds?' · Identificadores recuperados: '+esc(lookupIds):'')+(selectedLookup.sourceUrl?' · <a href="'+esc(selectedLookup.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir registro ↗</a>':'')+'</small>':'<small>No se encontró una coincidencia exacta en las fuentes automáticas consultadas.</small>')+worldcatLinks:'';  
+  const evidenceBox=(detectedIds.length||repeatedSummary||evidence.sampledPages?.length||lookupEvidence)?'<div class="notice metadata-suggestion"><b>Evidencia extraída del PDF y catálogos</b><small>Páginas examinadas: '+esc((evidence.sampledPages||candidate?.evidence?.sampledPages||[]).join(', ')||'No disponible')+' · '+esc(evidence.pageCount||'')+' páginas totales</small>'+(detectedIds.length?'<small>Identificadores detectados en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+lookupLine+'</div>':'';
  const box=candidate?'<div class="notice metadata-suggestion"><b>Sugerencia de '+esc(candidate.source||'catálogo')+' · '+esc(candidate.score||0)+'/100</b><p>'+esc(candidate.title||'Sin título')+' · '+esc((candidate.authors||[]).join(', ')||'Autor no identificado')+' · '+esc(candidate.year||'Año sin indicar')+'</p><small>'+esc(candidateIdText)+' · Editorial: '+esc(candidate.publisher||'No informada')+'</small>'+(detectedIds.length?'<small>Detectado en el PDF: '+esc(detectedIds.join(' · '))+'</small>':'')+(repeatedSummary?'<small>Texto repetido: '+esc(repeatedSummary)+'</small>':'')+(candidate.sourceUrl?'<small><a href="'+esc(candidate.sourceUrl)+'" target="_blank" rel="noopener noreferrer">Abrir ficha del producto ↗</a></small>':'')+'<button type="button" class="secondary" id="use-catalog-candidate">Usar esta sugerencia en el formulario</button></div>':'';
  m.innerHTML='<section class="modal metadata-modal"><header><b>Ficha bibliográfica</b><button id="close" type="button">Cerrar ×</button></header>'+box+evidenceBox+melosEvidence+'<form id="metadata-form"><label>Título<input name="title" maxlength="300" required value="'+esc(d.title)+'"></label><label>Autor/es<input name="authors" maxlength="1000" value="'+esc(d.authors.join(', '))+'" placeholder="Separar varios autores con coma"></label><div class="upload-grid"><label>Tipo de documento<select name="documentKind">'+[['unknown','Sin clasificar'],['book','Libro'],['academic','Tesis / trabajo académico'],['article','Artículo'],['music_score','Partitura / cancionero'],['periodical','Revista / publicación periódica'],['manual','Manual / guía'],['reference','Obra de referencia'],['other','Otro documento']].map(([v,t])=>'<option value="'+v+'" '+((d.documentKind||'unknown')===v?'selected':'')+'>'+t+'</option>').join('')+'</select></label><label>Categoría<input name="category" maxlength="100" value="'+esc(d.category)+'" required></label><label>Año de publicación<input name="publicationYear" type="number" min="1000" max="2100" value="'+esc(d.year)+'" placeholder="Opcional"></label><label>Colección<select name="collectionId"><option value="">Sin colección</option>'+collections.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===d.collectionId?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select></label><label>Cantidad de páginas<input name="pageCount" type="number" min="1" max="100000" value="'+esc(d.pageCount||'')+'" placeholder="Opcional"></label><label>ISBN<input name="isbn" maxlength="32" value="'+esc(d.isbn||'')+'"></label><label>Editorial<input name="publisher" maxlength="200" value="'+esc(d.publisher||'')+'"></label></div><label>Otros identificadores bibliográficos<textarea name="bibliographicIdentifiers" rows="4" maxlength="2000" placeholder="ISSN: 1234-567X&#10;DOI: 10.xxxx/xxxxx&#10;ISMN: 9790...&#10;Número editorial: BA 11111 o MEL9152">'+esc(metadataFormatIdentifiers(d.bibliographicIdentifiers||[]))+'</textarea><small>Un identificador por línea. Se admiten ISBN, ISSN, DOI, ISMN, ISWC, OCLC y números editoriales o de plancha, incluidos BA y MEL de Ediciones Melos.</small></label><label>Temas / etiquetas<input name="tags" maxlength="1000" value="'+esc((d.tags||[]).join(', '))+'" placeholder="guitarra, armonía, piano…"></label><label>Descripción<textarea name="description" rows="4" maxlength="3000">'+esc(d.description)+'</textarea></label><p class="muted">Origen: '+esc(metadataSourceLabel(d.metadataSource||'filename'))+' · Coincidencia: '+esc(metadataMatchLabel(d.metadataMatchStatus,d.metadataConfidence))+' · Tipo probable: '+esc(metadataKindLabel(d.documentKind))+'</p><div class="metadata-actions"><button class="secondary" id="save-private" type="button">'+(published?'Guardar cambios':'Guardar sin publicar')+'</button><button class="primary" id="publish-toggle" type="button">'+(published?'Guardar y retirar del catálogo':'Guardar y publicar')+'</button></div></form></section>';
  document.body.append(m);m.querySelector('#close').onclick=()=>m.remove();m.onclick=e=>{if(e.target===m)m.remove()};
@@ -956,10 +960,15 @@ function metadataCandidateFromGoogle(item){
  return{title:metadataTitleClean(v.title||''),authors:(v.authors||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns:[...new Set(ids)],identifiers:[...new Set(ids)].map(value=>({type:'isbn',value,normalized:value})),publisher:String(v.publisher||''),year:date?Number(date[0]):null,description:metadataCleanDescription(v.description),tags:(v.categories||[]).flatMap(x=>String(x).split(/[\/;|]/)).map(x=>x.trim()).filter(Boolean).slice(0,30),pageCount:v.pageCount||null,source:'Google Books',printType:String(v.printType||'').toUpperCase(),sourceId:item?.id||null};
 }
 
+let googleBooksBackoffUntil=0;
 async function googleBooksSearch(context){
+ if(Date.now()<googleBooksBackoffUntil)throw new Error('Google Books HTTP 429 · pausa temporal por límite de consultas');
  const p=new URLSearchParams({maxResults:'10',printType:'books',projection:'full'});
  if(context.isbn)p.set('q','isbn:'+context.isbn);else{const terms=['intitle:"'+String(context.title||'').replace(/["<>]/g,' ').slice(0,150)+'"'];if(context.authors?.[0])terms.push('inauthor:"'+String(context.authors[0]).replace(/["<>]/g,' ').slice(0,80)+'"');p.set('q',terms.join(' '))}
- const r=await fetch('https://www.googleapis.com/books/v1/volumes?'+p,{signal:AbortSignal.timeout(9000)});if(!r.ok)throw new Error('Google Books HTTP '+r.status);const data=await r.json();return(data.items||[]).map(metadataCandidateFromGoogle).filter(x=>metadataTitleUsable(x.title));
+ const r=await fetch('https://www.googleapis.com/books/v1/volumes?'+p,{signal:AbortSignal.timeout(9000)});
+ if(r.status===429){googleBooksBackoffUntil=Date.now()+5*60*1000;throw new Error('Google Books HTTP 429 · pausa de 5 minutos')}
+ if(!r.ok)throw new Error('Google Books HTTP '+r.status);
+ const data=await r.json();return(data.items||[]).map(metadataCandidateFromGoogle).filter(x=>metadataTitleUsable(x.title));
 }
 async function openLibrarySearch(context){
  const p=new URLSearchParams({fields:'key,title,author_name,first_publish_year,isbn,publisher,subject,number_of_pages_median',limit:'10'});
@@ -1215,19 +1224,17 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
   }else if(identifier.type==='isbn'){
    const isbn=metadataValidIsbn(identifier.value);
    if(isbn){
-    for(const context of contexts.length?contexts:[{title:'',authors:[]}]){
-     const isbnContext={...context,isbn};
-     try{
-      const candidates=await googleBooksSearch(isbnContext);
-      addTrace('Google Books · ISBN',identifier,candidates);
-      scoreCandidates(candidates,isbnContext);
-     }catch(error){addTrace('Google Books · ISBN',identifier,[],error);console.info('Google Books ISBN lookup unavailable:',error?.message||error)}
-     try{
-      const candidates=await openLibrarySearch(isbnContext);
-      addTrace('Open Library · ISBN',identifier,candidates);
-      scoreCandidates(candidates,isbnContext);
-     }catch(error){addTrace('Open Library · ISBN',identifier,[],error);console.info('Open Library ISBN lookup unavailable:',error?.message||error)}
-    }
+    const contextsForIsbn=contexts.length?contexts:[{title:'',authors:[]}];
+    try{
+     const candidates=await googleBooksSearch({isbn});
+     addTrace('Google Books · ISBN',identifier,candidates);
+     for(const context of contextsForIsbn)scoreCandidates(candidates,{...context,isbn});
+    }catch(error){addTrace('Google Books · ISBN',identifier,[],error);console.info('Google Books ISBN lookup unavailable:',error?.message||error)}
+    try{
+     const candidates=await openLibrarySearch({isbn});
+     addTrace('Open Library · ISBN',identifier,candidates);
+     for(const context of contextsForIsbn)scoreCandidates(candidates,{...context,isbn});
+    }catch(error){addTrace('Open Library · ISBN',identifier,[],error);console.info('Open Library ISBN lookup unavailable:',error?.message||error)}
    }
   }else{
    try{
