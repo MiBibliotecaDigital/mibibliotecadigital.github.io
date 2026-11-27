@@ -106,11 +106,17 @@ function validUploadKey(key) {
   return typeof key === "string" && UPLOAD_KEY_RE.test(key);
 }
 
-function normalizeDocumentMetadata(input) {
-  if (!input || typeof input !== "object") return null;
-  const title = typeof input.title === "string" ? input.title.trim() : "";
+function titleFromFilename(fileName) {
+  const base = String(fileName || "").split(/[\\/]/).pop().replace(/\.pdf$/i, "");
+  return base.replace(/[_]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || "Documento sin título";
+}
+
+function normalizeDocumentMetadata(input, fallbackTitle) {
+  input = input && typeof input === "object" ? input : {};
+  const title = (typeof input.title === "string" ? input.title.trim() : "") || fallbackTitle;
   const authorsText = typeof input.authors === "string" ? input.authors : "";
-  const authors = authorsText.split(",").map(x => x.trim()).filter(Boolean).slice(0, 20);
+  const authors = Array.isArray(input.authors) ? input.authors.map(x => String(x).trim()).filter(Boolean).slice(0, 20) :
+    authorsText.split(",").map(x => x.trim()).filter(Boolean).slice(0, 20);
   const category = typeof input.category === "string" ? input.category.trim() : "General";
   const description = typeof input.description === "string" ? input.description.trim() : "";
   const collectionId = input.collectionId || null;
@@ -194,8 +200,9 @@ async function uploadComplete(request, env, headers) {
   let body;
   try { body = await request.json(); }
   catch { return reply("Invalid completion data.", 400, headers); }
-  const { key, uploadId, parts, fileSize } = body || {};
-  const metadata = normalizeDocumentMetadata(body?.metadata);
+  const { key, uploadId, parts, fileSize, fileName } = body || {};
+  const safeFileName = typeof fileName === "string" ? fileName.slice(0, 255) : "";
+  const metadata = normalizeDocumentMetadata(body?.metadata, titleFromFilename(safeFileName));
   if (!validUploadKey(key) || typeof uploadId !== "string" || !uploadId ||
       uploadId.length > 512 || !metadata || !Array.isArray(parts) ||
       parts.length < 1 || parts.length > 10000 ||
@@ -239,7 +246,7 @@ async function uploadComplete(request, env, headers) {
     mime_type: "application/pdf",
     size_bytes: object.size,
     is_demo: false,
-    is_published: true
+    is_published: false
   };
   const insertResponse = await fetch(
     env.SUPABASE_URL.replace(/\/+$/, "") + "/rest/v1/documents",
@@ -338,7 +345,6 @@ export default {
         select: "r2_key,mime_type",
         id: `eq.${documentId}`,
         provider: "eq.r2",
-        is_published: "eq.true",
         limit: "1"
       });
       const metadataResponse = await fetch(
