@@ -166,7 +166,7 @@ async function uploadMultiple(e){
   const form=e.currentTarget,button=form.querySelector('#upload-submit'),results=form.querySelector('#upload-results');
   button.disabled=true;
   results.innerHTML=files.map((f,i)=>'<div class="upload-result" data-upload-row="'+i+'"><div><strong>'+esc(f.name)+'</strong><span class="upload-result-status">En cola</span></div><progress max="100" value="0"></progress></div>').join('');
-  let success=0,failed=0,skipped=0;
+  let success=0,failed=0,skipped=0;const uploadedThisBatch=[];
   try{
     const indexed=await ensureLibraryFingerprintIndex(session.access_token,(doc,current,total,percent)=>{
       const first=results.querySelector('[data-upload-row="0"]');
@@ -247,7 +247,7 @@ function bindBookManagement(){
   search?.addEventListener('input',refresh);status?.addEventListener('change',refresh);
 }
  try{
-        const metadata=await analyzeStoredDocument(document.id,false,session.access_token);
+        const metadata=await analyzeStoredDocument(document.id,false,session.access_token,uploadedThisBatch);
         if(metadata?.possibleDuplicates?.length){
           const keep=await askBibliographicDuplicateChoice(files[i],metadata.possibleDuplicates);
           if(!keep){
@@ -258,6 +258,7 @@ function bindBookManagement(){
         }else{
           status.textContent=metadata?.isbnLookup?'Subido · ficha enriquecida desde ISBN':'Subido · ficha analizada automáticamente';
         }
+        if(metadata?.candidate)uploadedThisBatch.push(metadata.candidate);
       }catch(metaError){
         console.warn('PDF metadata analysis skipped',metaError);
         status.textContent='Subido · análisis parcial; ficha editable';
@@ -441,7 +442,7 @@ async function lookupIsbnMetadata(isbn){
   return null;
 }
 
-async function analyzeStoredDocument(id,showToast=true,tokenOverride=null){
+async function analyzeStoredDocument(id,showToast=true,tokenOverride=null,additionalCandidates=[]){
   let d=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
   if(!d){
     const {data:row,error}=await db.from('documents').select('id,title,authors,publication_year,category,page_count,size_bytes,provider,description,tags,isbn,publisher,metadata_source,metadata_reviewed').eq('id',id).single();
@@ -510,8 +511,8 @@ async function analyzeStoredDocument(id,showToast=true,tokenOverride=null){
     const {error}=await db.from('documents').update(updates).eq('id',id);
     if(error)throw error;
     const candidate={...d,...updates,title:updates.title||d.title,authors:updates.authors||d.authors,isbn:updates.isbn||d.isbn};
-    const possibleDuplicates=[...books,...pendingDocs].filter(other=>bookDuplicateMatch(candidate,[other]));
-    return {...updates,isbnLookup:!!external,metadataProvider:external?.source||null,possibleDuplicates};
+    const possibleDuplicates=[...books,...pendingDocs,...additionalCandidates].filter(other=>other&&bookDuplicateMatch(candidate,[other]));
+    return {...updates,isbnLookup:!!external,metadataProvider:external?.source||null,possibleDuplicates,candidate};
   }finally{try{await task.destroy()}catch{}}
 }
 
