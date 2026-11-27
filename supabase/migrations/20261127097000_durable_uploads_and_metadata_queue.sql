@@ -42,3 +42,7 @@ create index if not exists documents_metadata_queue_idx
 create index if not exists documents_upload_recovery_idx
   on public.documents (upload_status, created_at)
   where provider = 'r2';
+
+create unique index if not exists documents_r2_key_unique_idx
+  on public.documents (r2_key)
+  where provider = 'r2' and r2_key is not null;
