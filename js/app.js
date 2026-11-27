@@ -967,6 +967,33 @@ async function openLibrarySearch(context){
  const r=await openLibraryFetch('https://openlibrary.org/search.json?'+p);if(!r.ok)throw new Error('Open Library HTTP '+r.status);const data=await r.json();
  return(data.docs||[]).map(x=>{const isbns=(x.isbn||[]).map(metadataValidIsbn).filter(Boolean);return{title:metadataTitleClean(x.title||''),authors:(x.author_name||[]).map(metadataAuthorClean).filter(metadataAuthorUsable),isbns,publisher:(x.publisher||[])[0]||'',year:Number(x.first_publish_year)||null,description:'',tags:(x.subject||[]).slice(0,30),pageCount:x.number_of_pages_median||null,source:'Open Library',printType:'BOOK',sourceId:x.key||null,identifiers:isbns.map(value=>({type:'isbn',value,normalized:value}))}}).filter(x=>metadataTitleUsable(x.title));
 }
+
+async function openLibraryLookupOclc(identifier){
+ if(identifier?.type!=='oclc')return[];
+ const number=String(identifier.value||'').replace(/\D/g,'');
+ if(!/^\d{5,12}$/.test(number))return[];
+ const bibkey='OCLC:'+number;
+ const params=new URLSearchParams({bibkeys:bibkey,format:'json',jscmd:'data'});
+ const response=await openLibraryFetch('https://openlibrary.org/api/books?'+params);
+ if(!response.ok)throw new Error('Open Library OCLC HTTP '+response.status);
+ const payload=await response.json(),record=payload?.[bibkey];
+ if(!record||!metadataTitleUsable(record.title))return[];
+ const rawIds=record.identifiers||{};
+ const isbns=[...(rawIds.isbn_10||[]),...(rawIds.isbn_13||[]),...(rawIds.isbn||[])].map(metadataValidIsbn).filter(Boolean);
+ const authors=(record.authors||[]).map(x=>metadataAuthorClean(x?.name||x)).filter(metadataAuthorUsable);
+ const publishers=record.publishers||[];
+ const publisher=publishers.length?String(publishers[0]?.name||publishers[0]||''):'';
+ const date=String(record.publish_date||'').match(/(?:18|19|20)\d{2}/);
+ const subjects=(record.subjects||[]).map(x=>String(x?.name||x||'')).filter(Boolean).slice(0,30);
+ return[{
+  title:metadataTitleClean(record.title),authors,isbns:[...new Set(isbns)],
+  identifiers:[identifier,...[...new Set(isbns)].map(value=>({type:'isbn',value,normalized:value}))],
+  publisher,year:date?Number(date[0]):null,description:'',tags:subjects,
+  pageCount:Number(record.number_of_pages)||null,source:'Open Library · OCLC',
+  printType:'BOOK',sourceId:record.url||bibkey,sourceUrl:record.url||null
+ }];
+}
+
 async function crossrefLookupIdentifier(identifier){
  const type=identifier?.type,value=String(identifier?.value||'');
  if(type!=='doi'&&type!=='issn')return[];
@@ -1207,7 +1234,8 @@ async function lookupBibliographicCandidate(contexts,identifiers=[],documentKind
     let candidates=[];
     if(identifier.type==='doi'||identifier.type==='issn')candidates=await crossrefLookupIdentifier(identifier);
     else if(identifier.type==='ismn')candidates=await locLookupIdentifier(identifier);
-    addTrace(identifier.type==='doi'||identifier.type==='issn'?'Crossref':identifier.type==='ismn'?'Library of Congress':'Identifier catalog',identifier,candidates);
+    else if(identifier.type==='oclc')candidates=await openLibraryLookupOclc(identifier);
+    addTrace(identifier.type==='doi'||identifier.type==='issn'?'Crossref':identifier.type==='ismn'?'Library of Congress':identifier.type==='oclc'?'Open Library · OCLC':'Identifier catalog',identifier,candidates);
     for(const context of contexts.length?contexts:[{title:'',authors:[]}])scoreCandidates(candidates,context);
    }catch(error){addTrace('Identifier lookup',identifier,[],error);console.info('Identifier lookup unavailable ('+identifier.type+'):',error?.message||error)}
   }
