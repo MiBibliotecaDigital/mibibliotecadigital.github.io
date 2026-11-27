@@ -1002,12 +1002,15 @@ function metadataCandidateFromIsbnLab(book, queriedIsbn) {
  };
 }
 
+const isbnLabResultCache=new Map();
 let isbnLabRequestChain=Promise.resolve(),isbnLabLastRequest=0,isbnLabBackoffUntil=0,isbnLabPausedUntil=0,isbnLabPausedReason="";
 async function isbnLabSearch(value) {
  const isbn=metadataValidIsbn(value);
  if(!isbn)return[];
+ if(isbnLabResultCache.has(isbn))return isbnLabResultCache.get(isbn);
  if(Date.now()<isbnLabPausedUntil)throw new Error(isbnLabPausedReason||"ISBNLab temporalmente pausado.");
  const request=isbnLabRequestChain.then(async()=>{
+  if(isbnLabResultCache.has(isbn))return isbnLabResultCache.get(isbn);
   if(Date.now()<isbnLabPausedUntil)throw new Error(isbnLabPausedReason||"ISBNLab temporalmente pausado.");
   if(Date.now()<isbnLabBackoffUntil)throw new Error("ISBNLab límite temporal; reintentar en "+Math.ceil((isbnLabBackoffUntil-Date.now())/1000)+" s");
   const wait=Math.max(0,1000-(Date.now()-isbnLabLastRequest));
@@ -1021,7 +1024,7 @@ async function isbnLabSearch(value) {
   endpoint.searchParams.set("isbn",isbn);
   const response=await fetch(endpoint,{headers:{Authorization:"Bearer "+session.access_token},signal:AbortSignal.timeout(16000)});
   let payload={};try{payload=await response.json()}catch{}
-  if(response.status===404||payload.notFound)return[];
+  if(response.status===404||payload.notFound){isbnLabResultCache.set(isbn,[]);return[];}
   if(response.status===429){
    const seconds=Math.max(1,Number(payload.retryAfterSeconds)||1);
    isbnLabBackoffUntil=Date.now()+seconds*1000;
@@ -1035,8 +1038,10 @@ async function isbnLabSearch(value) {
    }
    throw new Error(detail+(payload.detail?": "+payload.detail:""));
   }
-  if(!payload.match||!payload.book)return[];
-  return[metadataCandidateFromIsbnLab(payload.book,isbn)];
+  if(!payload.match||!payload.book){isbnLabResultCache.set(isbn,[]);return[];}
+  const candidates=[metadataCandidateFromIsbnLab(payload.book,isbn)];
+  isbnLabResultCache.set(isbn,candidates);
+  return candidates;
  });
  isbnLabRequestChain=request.catch(()=>null);
  return request;
