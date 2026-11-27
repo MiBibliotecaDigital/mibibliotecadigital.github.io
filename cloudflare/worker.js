@@ -328,6 +328,9 @@ async function uploadComplete(request, env, headers, ctx) {
     return reply("The stored PDF size does not match the selected file. It was retained for administrator review.", 409, headers);
   }
 
+  // Queue a single persistent cover-generation job as soon as the PDF is safely stored.
+  await enqueueCoverJob(env, documentId, key);
+
   const patch = {
     upload_status: "stored",
     size_bytes: stored.size,
@@ -748,6 +751,7 @@ async function renderAndStoreCover(env, documentId, pdfKey) {
     url: renderUrl, selector: "#cover",
     viewport: { width: 440, height: 600, deviceScaleFactor: 1 },
     gotoOptions: { waitUntil: "networkidle0", timeout: 60000 },
+    waitForSelector: { selector: "body[data-cover-ready='1']", timeout: 60000 },
     screenshotOptions: { type: "jpeg", quality: 76, optimizeForSpeed: true, omitBackground: false }
   });
   if (!screenshot?.ok) {
@@ -781,64 +785,150 @@ async function writeCoverUsage(env, usage) {
     updatedAt: new Date().toISOString(), dailyLimitMs: COVER_DAILY_BROWSER_BUDGET_MS
   }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
 }
+const COVER_BOOTSTRAP_KEY = "cover-jobs/bootstrap-v1.done.json";
+
+async function listAllR2Objects(env, prefix, include = []) {
+  const objects = [];
+  let cursor;
+  do {
+    const page = await env.BIBLIOTECA.list({
+      prefix, limit: 1000,
+      ...(cursor ? { cursor } : {}),
+      ...(include.length ? { include } : {})
+    });
+    objects.push(...(page.objects || []));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return objects;
+}
+
+async function enqueueCoverJob(env, documentId, pdfKey) {
+  if (!UUID_RE.test(documentId || "") || !validUploadKey(pdfKey)) return false;
+  const coverKey = "covers/" + documentId + ".jpg";
+  if (await env.BIBLIOTECA.head(coverKey)) {
+    await env.BIBLIOTECA.delete(coverJobKey(documentId));
+    return false;
+  }
+  const existing = await getCoverRetryState(env, documentId);
+  await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+    documentId, pdfKey, status: "pending",
+    attempts: existing.attempts || 0,
+    retryAfter: existing.retryAfter || 0,
+    updatedAt: new Date().toISOString()
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+  return true;
+}
+
+async function bootstrapCoverQueue(env) {
+  if (await env.BIBLIOTECA.head(COVER_BOOTSTRAP_KEY)) return { alreadyDone: true, queued: 0 };
+  const pdfObjects = await listAllR2Objects(env, "library/", ["customMetadata"]);
+  let queued = 0, skipped = 0;
+  for (const object of pdfObjects) {
+    const documentId = object.customMetadata?.documentId || "";
+    if (!validUploadKey(object.key) || !UUID_RE.test(documentId)) continue;
+    const coverExists = await env.BIBLIOTECA.head("covers/" + documentId + ".jpg");
+    if (coverExists) { skipped++; continue; }
+    await enqueueCoverJob(env, documentId, object.key);
+    queued++;
+  }
+  await env.BIBLIOTECA.put(COVER_BOOTSTRAP_KEY, JSON.stringify({
+    version: 1, completedAt: new Date().toISOString(), scanned: pdfObjects.length,
+    queued, existingCovers: skipped
+  }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+  console.info("One-time cover queue bootstrap completed", { scanned: pdfObjects.length, queued, existingCovers: skipped });
+  return { alreadyDone: false, queued };
+}
+
 async function getCoverRetryState(env, documentId) {
   const object = await env.BIBLIOTECA.get(coverJobKey(documentId));
-  if (!object) return { attempts: 0, retryAfter: 0 };
+  if (!object) return { attempts: 0, retryAfter: 0, leaseUntil: 0, pdfKey: "" };
   try {
     const value = await object.json();
-    return { attempts: Math.max(0, Number(value.attempts) || 0), retryAfter: Math.max(0, Number(value.retryAfter) || 0) };
-  } catch { return { attempts: 0, retryAfter: 0 }; }
+    return {
+      ...value,
+      attempts: Math.max(0, Number(value.attempts) || 0),
+      retryAfter: Math.max(0, Number(value.retryAfter) || 0),
+      leaseUntil: Math.max(0, Number(value.leaseUntil) || 0),
+      pdfKey: typeof value.pdfKey === "string" ? value.pdfKey : ""
+    };
+  } catch {
+    return { attempts: 0, retryAfter: 0, leaseUntil: 0, pdfKey: "" };
+  }
 }
-async function markCoverFailure(env, documentId, error) {
-  const previous = await getCoverRetryState(env, documentId);
-  const attempts = previous.attempts + 1;
+
+async function markCoverFailure(env, documentId, error, previous = {}) {
+  const current = await getCoverRetryState(env, documentId);
+  const attempts = Math.max(current.attempts, previous.attempts || 0) + 1;
   const delayMinutes = Math.min(60, 5 * (2 ** Math.min(attempts - 1, 4)));
   await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
-    documentId, attempts, retryAfter: Date.now() + delayMinutes * 60 * 1000,
-    lastError: String(error?.message || error).slice(0, 500), updatedAt: new Date().toISOString()
+    documentId, pdfKey: current.pdfKey || previous.pdfKey || "",
+    status: "pending", attempts,
+    retryAfter: Date.now() + delayMinutes * 60 * 1000,
+    leaseUntil: 0,
+    lastError: String(error?.message || error).slice(0, 500),
+    updatedAt: new Date().toISOString()
   }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
 }
+
 async function processMissingCoverThumbnails(env, maxPerRun = 2) {
   if (!env.BIBLIOTECA || !env.BROWSER) {
-    console.warn("Cover backfill skipped: R2 or Browser Run binding unavailable");
+    console.warn("Cover queue paused: R2 or Browser Run binding unavailable");
     return;
   }
+
+  const bootstrap = await bootstrapCoverQueue(env);
   const day = new Date().toISOString().slice(0, 10);
   const usage = await readCoverUsage(env, day);
   if (usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) {
-    console.info("Cover backfill paused at daily Browser Run safety budget", usage);
+    console.info("Cover queue paused at daily Browser Run safety budget", usage);
     return;
   }
-  const coverListing = await env.BIBLIOTECA.list({ prefix: "covers/", limit: 1000 });
-  const existingCovers = new Set((coverListing.objects || []).map(object => object.key));
-  const pdfListing = await env.BIBLIOTECA.list({ prefix: "library/", limit: 1000, include: ["customMetadata"] });
-  const candidates = (pdfListing.objects || []).filter(object =>
-    validUploadKey(object.key) && UUID_RE.test(object.customMetadata?.documentId || "") &&
-    !existingCovers.has("covers/" + object.customMetadata.documentId + ".jpg")
+
+  const entries = await listAllR2Objects(env, "cover-jobs/");
+  const pending = entries.filter(entry =>
+    /^cover-jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/i.test(entry.key)
   );
-  let attempted = 0, generated = 0, failed = 0;
-  for (const candidate of candidates) {
+
+  let attempted = 0, generated = 0, alreadyPresent = 0, failed = 0;
+  for (const entry of pending) {
     if (attempted >= maxPerRun || usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) break;
-    const documentId = candidate.customMetadata.documentId;
-    const retry = await getCoverRetryState(env, documentId);
-    if (retry.retryAfter > Date.now()) continue;
+    const documentId = entry.key.slice("cover-jobs/".length, -".json".length);
+    const job = await getCoverRetryState(env, documentId);
+    if (!job.pdfKey || !validUploadKey(job.pdfKey)) continue;
+    if (job.retryAfter > Date.now() || job.leaseUntil > Date.now()) continue;
+
+    const coverKey = "covers/" + documentId + ".jpg";
+    if (await env.BIBLIOTECA.head(coverKey)) {
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
+      alreadyPresent++;
+      continue;
+    }
+
+    // A short lease prevents concurrent cron invocations from rendering the same PDF twice.
+    const leasedUntil = Date.now() + 3 * 60 * 1000;
+    await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+      ...job, documentId, status: "processing", leaseUntil: leasedUntil,
+      updatedAt: new Date().toISOString()
+    }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+
     attempted++;
     try {
-      const result = await renderAndStoreCover(env, documentId, candidate.key);
+      const result = await renderAndStoreCover(env, documentId, job.pdfKey);
       usage.browserMsUsed += result.browserMsUsed || 0;
       if (!result.alreadyExists) { usage.generated++; generated++; }
       await env.BIBLIOTECA.delete(coverJobKey(documentId));
       await writeCoverUsage(env, usage);
-      existingCovers.add("covers/" + documentId + ".jpg");
     } catch (error) {
       failed++;
-      console.error("Server-side cover generation failed", { documentId, key: candidate.key, error: String(error) });
-      await markCoverFailure(env, documentId, error);
+      console.error("Server-side cover generation failed", { documentId, key: job.pdfKey, error: String(error) });
+      await markCoverFailure(env, documentId, error, job);
       await writeCoverUsage(env, usage);
     }
   }
-  console.info("Server-side cover backfill batch", {
-    day, scanned: candidates.length, attempted, generated, failed,
+
+  console.info("Server-side cover queue batch", {
+    day, bootstrapQueued: bootstrap.queued, pending: pending.length,
+    attempted, generated, alreadyPresent, failed,
     browserMsUsed: usage.browserMsUsed, dailyBudgetMs: COVER_DAILY_BROWSER_BUDGET_MS
   });
 }
