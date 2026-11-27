@@ -1,7 +1,7 @@
 import{createClient}from'https://esm.sh/@supabase/supabase-js@2';
 const c=window.BIBLIOTECA_CONFIG||{},live=!!(c.supabaseUrl&&c.supabaseAnonKey&&c.demoMode===false),db=live?createClient(c.supabaseUrl,c.supabaseAnonKey):null,root=document.querySelector('#app');
 let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],uploadInProgress=false,metadataInProgress=false,metadataCancelRequested=false,metadataQueueProgress={done:0,total:0,failed:0},favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all',selectedBookIds=new Set();
-const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set();let coverObserver=null,coverQueue=[],coverWorkers=0,coverPdfjsPromise=null;let coverSessionEpoch=0;
+const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set(),coverThumbnailPromises=new Map();let coverObserver=null,coverQueue=[],coverWorkers=0,coverPdfjsPromise=null;let coverSessionEpoch=0;
 const sample=[['d1','Atlas del Archipielago Luminario','Elena Mar de Papel','Geografia imaginaria','atlas-luminario.pdf','sea'],['d2','Herbario de Arrecife Azul','Tomas del Invernadero','Naturaleza','herbario-arrecife-azul.pdf','leaf'],['d3','Cuaderno musical de Ciudad Resonante','Mara Afinacion','Musica','cuaderno-musica-ciudad.pdf','amber']].map(x=>({id:x[0],title:x[1],author:x[2],category:x[3],year:2026,pages:1,size:'PDF de muestra',provider:'demo',path:'/demo/pdfs/'+x[4],tone:x[5]}));
 const demoUsers=[{name:'Administracion de prueba',email:'admin@biblioteca.local',role:'admin',status:'Activo'},{name:'Lector de ejemplo',email:'demo@biblioteca.local',role:'reader',status:'Activo'}];
 const esc=s=>String(s??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),label=r=>r==='admin'?'Administrador':r==='editor'?'Editor':'Lector';
@@ -527,22 +527,29 @@ function collectionModal(existing=null){const m=document.createElement('div');m.
 function addCollection(){if(role==='admin')collectionModal()}
 function editCollection(id){const c=collections.find(x=>x.id===id);if(c&&role==='admin')collectionModal(c)}
 async function deleteCollection(id){const c=collections.find(x=>x.id===id);if(!c||role!=='admin')return;const count=books.filter(b=>b.collectionId===id).length+pendingDocs.filter(b=>b.collectionId===id).length;if(!confirm('¿Eliminar la colección "'+c.name+'"'+(count?' y quitarla de '+count+' fichas':'')+'? Los libros y sus PDFs no se borrarán.'))return;const {error:moveError}=await db.from('documents').update({collection_id:null}).eq('collection_id',id);if(moveError)return toast('No se pudieron liberar los libros: '+moveError.message);const {error}=await db.from('collections').delete().eq('id',id);if(error)return toast('No se pudo eliminar: '+error.message);toast('Colección eliminada; los libros se conservaron.');await loadUser(me)}
-function content(){if(page==='account')return accountPage();if(page==='upload'&&role==='admin')return uploadPage();if((page==='books'||page==='pending')&&role==='admin')return booksPage();if(page==='users'&&role==='admin')return usersPage();if(page==='settings'&&role==='admin')return '<div class="heading"><h1>Configuración</h1></div><div class="panel"><h2>Almacenamiento privado</h2><p>Bucket R2 privado conectado. Los PDFs se entregan por pasarela autenticada.</p><h2>Metadatos</h2><p>Los nuevos PDFs se analizan al subirlos; las sugerencias deben revisarse antes de publicar.</p></div>';if(page==='collections')return collectionsPage();let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':'Tu biblioteca',controls=page==='catalog'||page==='favorites'?catalogControls():'';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu biblioteca organizada en un solo lugar.</p></div><span class="tag">'+list.length+' libros</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>'+collections.length+'</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div><h2 class="section-heading">Tus colecciones</h2>'+collectionShelves():'')+controls+(page==='catalog'||page==='favorites'?'<div class="chips">'+[...new Set(books.map(x=>x.category).filter(Boolean))].sort().map(x=>'<button data-cat="'+esc(x)+'">'+esc(x)+'</button>').join('')+'<button data-clear-filters="1">Limpiar filtros</button></div>':'')+'<div class="'+(viewMode==='list'?'book-list':'grid')+'" style="--book-columns:'+density+'">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'PDF ficticios de demostración.')+'</p>'}
-function render(){window.__BIBLIOTECA_READY__=true;root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACIÓN · sin autenticación real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Inicio')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+nav('account','♙ Mi cuenta')+(role==='admin'?'<small>ADMINISTRACIÓN</small>'+nav('users','♟ Usuarios')+nav('books','▤ Administrar libros')+nav('upload','＋ Subir PDFs')+nav('settings','⚙ Configuración'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesión</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar título, autor o tema..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#search').oninput=e=>{query=e.target.value;const g=document.querySelector('.grid,.book-list');if(g)g.innerHTML=filtered().map(card).join('');bindBooks();if(page==='books'||page==='pending')bindBookManagement()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';filterCategory=x.dataset.cat;filterCollection='';render()});document.querySelector('#add')?.addEventListener('click',addUser);document.querySelector('#account-form')?.addEventListener('submit',saveAccount);document.querySelector('#sort-by')?.addEventListener('change',e=>{sortBy=e.target.value;render()});document.querySelector('#sort-dir')?.addEventListener('click',()=>{sortDir=sortDir==='asc'?'desc':'asc';render()});document.querySelector('#view-mode')?.addEventListener('change',e=>{viewMode=e.target.value;render()});document.querySelector('#density')?.addEventListener('change',e=>{density=Number(e.target.value);render()});document.querySelector('#filter-collection')?.addEventListener('change',e=>{filterCollection=e.target.value;render()});document.querySelector('#filter-category')?.addEventListener('change',e=>{filterCategory=e.target.value;render()});document.querySelectorAll('[data-collection]').forEach(x=>x.onclick=()=>{page='catalog';filterCollection=x.dataset.collection;render()});document.querySelector('#add-collection')?.addEventListener('click',addCollection);document.querySelectorAll('[data-edit-collection]').forEach(x=>x.onclick=()=>editCollection(x.dataset.editCollection));document.querySelectorAll('[data-delete-collection]').forEach(x=>x.onclick=()=>deleteCollection(x.dataset.deleteCollection));document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>{filterCollection='';filterCategory='';query='';render()});document.querySelector('#upload-form')?.addEventListener('submit',uploadMultiple);document.querySelector('#upload-files')?.addEventListener('change',e=>{if(uploadInProgress)return;selectedFiles=Array.from(e.target.files||[]);renderUploadSelection()});const drop=document.querySelector('#upload-drop');drop?.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop?.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop?.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');if(uploadInProgress)return;selectedFiles=Array.from(e.dataTransfer?.files||[]);renderUploadSelection()});document.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));document.querySelectorAll('[data-edit-book]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editBook));document.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));document.querySelectorAll('[data-analyze-doc]').forEach(x=>x.onclick=async()=>{try{await analyzeStoredDocument(x.dataset.analyzeDoc,true);await loadUser(me)}catch(e){toast('No se pudo analizar: '+e.message)}});document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUser(x.dataset.editUser));document.querySelectorAll('[data-delete-user]').forEach(x=>x.onclick=()=>deleteUser(x.dataset.deleteUser));bindBooks();if(page==='books'||page==='pending')bindBookManagement()}
+function content(){if(page==='account')return accountPage();if(page==='upload'&&role==='admin')return uploadPage();if((page==='books'||page==='pending')&&role==='admin')return booksPage();if(page==='users'&&role==='admin')return usersPage();if(page==='settings'&&role==='admin')return '<div class="heading"><h1>Configuración</h1></div><div class="panel"><h2>Almacenamiento privado</h2><p>Bucket R2 privado conectado. Los PDFs se entregan por pasarela autenticada.</p><h2>Miniaturas de portada</h2><p>Las portadas se guardan como imágenes JPEG privadas en R2. Una vez generadas, no se vuelve a descargar ni procesar el PDF para mostrarlas.</p><button id="generate-cover-thumbnails" type="button">Generar y guardar miniaturas faltantes</button><p id="cover-batch-status" class="muted" aria-live="polite"></p><h2>Metadatos</h2><p>Los nuevos PDFs se analizan al subirlos; las sugerencias deben revisarse antes de publicar.</p></div>';if(page==='collections')return collectionsPage();let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':'Tu biblioteca',controls=page==='catalog'||page==='favorites'?catalogControls():'';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu biblioteca organizada en un solo lugar.</p></div><span class="tag">'+list.length+' libros</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>'+collections.length+'</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div><h2 class="section-heading">Tus colecciones</h2>'+collectionShelves():'')+controls+(page==='catalog'||page==='favorites'?'<div class="chips">'+[...new Set(books.map(x=>x.category).filter(Boolean))].sort().map(x=>'<button data-cat="'+esc(x)+'">'+esc(x)+'</button>').join('')+'<button data-clear-filters="1">Limpiar filtros</button></div>':'')+'<div class="'+(viewMode==='list'?'book-list':'grid')+'" style="--book-columns:'+density+'">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'PDF ficticios de demostración.')+'</p>'}
+function render(){window.__BIBLIOTECA_READY__=true;root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACIÓN · sin autenticación real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Inicio')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+nav('account','♙ Mi cuenta')+(role==='admin'?'<small>ADMINISTRACIÓN</small>'+nav('users','♟ Usuarios')+nav('books','▤ Administrar libros')+nav('upload','＋ Subir PDFs')+nav('settings','⚙ Configuración'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesión</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar título, autor o tema..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#search').oninput=e=>{query=e.target.value;const g=document.querySelector('.grid,.book-list');if(g)g.innerHTML=filtered().map(card).join('');bindBooks();if(page==='books'||page==='pending')bindBookManagement()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';filterCategory=x.dataset.cat;filterCollection='';render()});document.querySelector('#add')?.addEventListener('click',addUser);document.querySelector('#account-form')?.addEventListener('submit',saveAccount);document.querySelector('#sort-by')?.addEventListener('change',e=>{sortBy=e.target.value;render()});document.querySelector('#sort-dir')?.addEventListener('click',()=>{sortDir=sortDir==='asc'?'desc':'asc';render()});document.querySelector('#view-mode')?.addEventListener('change',e=>{viewMode=e.target.value;render()});document.querySelector('#density')?.addEventListener('change',e=>{density=Number(e.target.value);render()});document.querySelector('#filter-collection')?.addEventListener('change',e=>{filterCollection=e.target.value;render()});document.querySelector('#filter-category')?.addEventListener('change',e=>{filterCategory=e.target.value;render()});document.querySelectorAll('[data-collection]').forEach(x=>x.onclick=()=>{page='catalog';filterCollection=x.dataset.collection;render()});document.querySelector('#add-collection')?.addEventListener('click',addCollection);document.querySelectorAll('[data-edit-collection]').forEach(x=>x.onclick=()=>editCollection(x.dataset.editCollection));document.querySelectorAll('[data-delete-collection]').forEach(x=>x.onclick=()=>deleteCollection(x.dataset.deleteCollection));document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>{filterCollection='';filterCategory='';query='';render()});document.querySelector('#upload-form')?.addEventListener('submit',uploadMultiple);document.querySelector('#generate-cover-thumbnails')?.addEventListener('click',generateAllCoverThumbnails);document.querySelector('#upload-files')?.addEventListener('change',e=>{if(uploadInProgress)return;selectedFiles=Array.from(e.target.files||[]);renderUploadSelection()});const drop=document.querySelector('#upload-drop');drop?.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop?.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop?.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');if(uploadInProgress)return;selectedFiles=Array.from(e.dataTransfer?.files||[]);renderUploadSelection()});document.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));document.querySelectorAll('[data-edit-book]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editBook));document.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));document.querySelectorAll('[data-analyze-doc]').forEach(x=>x.onclick=async()=>{try{await analyzeStoredDocument(x.dataset.analyzeDoc,true);await loadUser(me)}catch(e){toast('No se pudo analizar: '+e.message)}});document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUser(x.dataset.editUser));document.querySelectorAll('[data-delete-user]').forEach(x=>x.onclick=()=>deleteUser(x.dataset.deleteUser));bindBooks();if(page==='books'||page==='pending')bindBookManagement()}
 function bindBooks(){document.querySelectorAll('[data-open]').forEach(x=>x.onclick=()=>openBook(x.dataset.open));document.querySelectorAll('[data-fav]').forEach(x=>x.onclick=()=>{favs.has(x.dataset.fav)?favs.delete(x.dataset.fav):favs.add(x.dataset.fav);render()});bindCoverThumbnails()}
-function applyCoverThumbnail(id,dataUrl){
+function applyCoverThumbnail(id,imageUrl){
  document.querySelectorAll('[data-cover-id]').forEach(node=>{
   if(node.dataset.coverId!==id)return;
-  const image=document.createElement('img');image.className='cover-image';image.alt='Portada de '+(node.dataset.coverTitle||'libro');image.decoding='async';image.src=dataUrl;
+  const image=document.createElement('img');image.className='cover-image';image.alt='Portada de '+(node.dataset.coverTitle||'libro');image.decoding='async';image.loading='lazy';image.src=imageUrl;
   node.replaceChildren(image);node.classList.add('cover-loaded');
  });
 }
 function enqueueCoverThumbnail(node){
- const id=node.dataset.coverId;if(!id||coverThumbnailPending.has(id)||coverThumbnailFailed.has(id))return;
- const cached=coverThumbnailCache.get(id);if(cached){applyCoverThumbnail(id,cached);return}
- const documentRecord=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
- if(!live||!documentRecord||documentRecord.provider!=='r2'||!c.pdfGatewayUrl)return;
- coverThumbnailPending.add(id);coverQueue.push({id});drainCoverQueue();
+ const id=node.dataset.coverId;if(!id)return;
+ queueCoverThumbnail(id).catch(error=>console.info('Cover thumbnail queue failed:',error?.message||error));
+}
+function queueCoverThumbnail(id){
+ if(!id||coverThumbnailFailed.has(id))return Promise.resolve(false);
+ if(coverThumbnailCache.has(id)){applyCoverThumbnail(id,coverThumbnailCache.get(id));return Promise.resolve(true)}
+ if(coverThumbnailPromises.has(id))return coverThumbnailPromises.get(id);
+ const record=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
+ if(!live||!record||record.provider!=='r2'||!c.pdfGatewayUrl)return Promise.resolve(false);
+ coverThumbnailPending.add(id);
+ let resolveJob;const promise=new Promise(resolve=>{resolveJob=resolve});
+ coverThumbnailPromises.set(id,promise);coverQueue.push({id,resolve:resolveJob});drainCoverQueue();return promise;
 }
 function bindCoverThumbnails(){
  if(coverObserver){coverObserver.disconnect();coverObserver=null}
@@ -559,35 +566,66 @@ function bindCoverThumbnails(){
  }
 }
 async function renderCoverThumbnail(id){
- const epoch=coverSessionEpoch;
- let loadingTask=null;
+ const epoch=coverSessionEpoch;let loadingTask=null,canvas=null;
  try{
   const record=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);
-  if(!record||record.provider!=='r2'||!c.pdfGatewayUrl)return;
+  if(!record||record.provider!=='r2'||!c.pdfGatewayUrl)return false;
   const {data:{session},error}=await db.auth.getSession();
   if(error)throw error;if(!session?.access_token)throw new Error('Session unavailable for cover rendering');
+  const gateway=c.pdfGatewayUrl.replace(/\/+$/,'');
+  const authorization={Authorization:'Bearer '+session.access_token};
+  const saved=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id),{headers:authorization,cache:'no-cache'});
+  if(saved.ok){
+   const blob=await saved.blob();if(epoch!==coverSessionEpoch)return false;
+   const imageUrl=URL.createObjectURL(blob);coverThumbnailCache.set(id,imageUrl);applyCoverThumbnail(id,imageUrl);return true;
+  }
+  if(saved.status!==404)throw new Error('Thumbnail request failed · HTTP '+saved.status);
+  if(role!=='admin')return false;
   if(!coverPdfjsPromise)coverPdfjsPromise=import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs').then(pdfjs=>{pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';return pdfjs}).catch(error=>{coverPdfjsPromise=null;throw error});
-  const pdfjs=await coverPdfjsPromise;
-  const url=c.pdfGatewayUrl.replace(/\/+$/,'')+'/pdf/'+encodeURIComponent(id);
-  loadingTask=pdfjs.getDocument({url,httpHeaders:{Authorization:'Bearer '+session.access_token},withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
+  const pdfjs=await coverPdfjsPromise,url=gateway+'/pdf/'+encodeURIComponent(id);
+  loadingTask=pdfjs.getDocument({url,httpHeaders:authorization,withCredentials:false,disableAutoFetch:true,disableStream:true,rangeChunkSize:65536});
   const pdf=await loadingTask.promise,page=await pdf.getPage(1),base=page.getViewport({scale:1});
   const scale=Math.min(440/base.width,560/base.height,1),viewport=page.getViewport({scale});
-  const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.ceil(viewport.width));canvas.height=Math.max(1,Math.ceil(viewport.height));
+  canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.ceil(viewport.width));canvas.height=Math.max(1,Math.ceil(viewport.height));
   const context=canvas.getContext('2d',{alpha:false});if(!context)throw new Error('Canvas unavailable');
   context.fillStyle='#ffffff';context.fillRect(0,0,canvas.width,canvas.height);
   await page.render({canvasContext:context,viewport,background:'rgb(255,255,255)'}).promise;
-  if(epoch!==coverSessionEpoch)return;
-  const dataUrl=canvas.toDataURL('image/jpeg',.82);coverThumbnailCache.set(id,dataUrl);applyCoverThumbnail(id,dataUrl);
-  page.cleanup();canvas.width=1;canvas.height=1;
+  if(epoch!==coverSessionEpoch)return false;
+  const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('Could not encode thumbnail')),'image/jpeg',.82));
+  if(blob.size>512*1024)throw new Error('Thumbnail exceeds 512 KiB');
+  const stored=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id),{method:'PUT',headers:{...authorization,'Content-Type':'image/jpeg'},body:blob});
+  if(!stored.ok)throw new Error('Could not save thumbnail · HTTP '+stored.status);
+  const imageUrl=URL.createObjectURL(blob);coverThumbnailCache.set(id,imageUrl);applyCoverThumbnail(id,imageUrl);page.cleanup();return true;
  }catch(error){
-  coverThumbnailFailed.add(id);console.info('Cover thumbnail unavailable for '+id+':',error?.message||error);
- }finally{try{await loadingTask?.destroy()}catch{}}
+  if(epoch===coverSessionEpoch){coverThumbnailFailed.add(id);console.info('Cover thumbnail unavailable for '+id+':',error?.message||error)}
+  return false;
+ }finally{
+  if(canvas){canvas.width=1;canvas.height=1}
+  try{await loadingTask?.destroy()}catch{}
+ }
 }
 function drainCoverQueue(){
  while(coverWorkers<2&&coverQueue.length){
   const job=coverQueue.shift();coverWorkers++;
-  renderCoverThumbnail(job.id).finally(()=>{coverThumbnailPending.delete(job.id);coverWorkers--;drainCoverQueue()});
+  renderCoverThumbnail(job.id).then(result=>job.resolve(result)).catch(()=>job.resolve(false)).finally(()=>{
+   coverThumbnailPending.delete(job.id);coverThumbnailPromises.delete(job.id);coverWorkers--;drainCoverQueue();
+  });
  }
+}
+async function generateAllCoverThumbnails(){
+ const button=document.querySelector('#generate-cover-thumbnails'),status=document.querySelector('#cover-batch-status');
+ if(!button||!status||role!=='admin'||!live)return;
+ const targets=books.filter(x=>x.provider==='r2');
+ if(!targets.length){status.textContent='No hay PDFs publicados para procesar.';return}
+ button.disabled=true;let completed=0,available=0,failed=0;
+ status.textContent='Preparando '+targets.length+' portadas…';
+ const jobs=targets.map(async record=>{
+  const ok=await queueCoverThumbnail(record.id);
+  if(ok)available++;else failed++;
+  completed++;status.textContent='Procesadas '+completed+' de '+targets.length+' · '+available+' disponibles · '+failed+' pendientes';
+ });
+ await Promise.all(jobs);button.disabled=false;
+ status.textContent='Finalizado: '+available+' miniaturas disponibles de '+targets.length+'.'+(failed?' '+failed+' requieren revisión.':'');
 }
 async function openBook(id){
   const b=books.find(x=>x.id===id)||pendingDocs.find(x=>x.id===id);if(!b)return;
