@@ -1028,48 +1028,6 @@ async function processMissingCoverThumbnails(env, maxPerRun = 1) {
   );
 
   let attempted = 0, generated = 0, alreadyPresent = 0, failed = 0;
-  for (const entry of pending) {
-    if (attempted >= maxPerRun || usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) break;
-    const documentId = entry.key.slice("cover-jobs/".length, -".json".length);
-    const job = await getCoverRetryState(env, documentId);
-    if (!job.pdfKey || !validUploadKey(job.pdfKey)) continue;
-    if (job.retryAfter > Date.now() || job.leaseUntil > Date.now()) continue;
-
-    const coverKey = "covers/" + documentId + ".jpg";
-    if (await env.BIBLIOTECA.head(coverKey)) {
-      await env.BIBLIOTECA.delete(coverJobKey(documentId));
-      alreadyPresent++;
-      continue;
-    }
-
-    // A short lease prevents concurrent cron invocations from rendering the same PDF twice.
-    const leasedUntil = Date.now() + 3 * 60 * 1000;
-    await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
-      ...job, documentId, status: "processing", leaseUntil: leasedUntil,
-      updatedAt: new Date().toISOString()
-    }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
-
-    attempted++;
-    try {
-      const result = await renderAndStoreCover(env, documentId, job.pdfKey);
-      usage.browserMsUsed += result.browserMsUsed || 0;
-      if (!result.alreadyExists) { usage.generated++; generated++; }
-      await env.BIBLIOTECA.delete(coverJobKey(documentId));
-      await writeCoverUsage(env, usage);
-    } catch (error) {
-      failed++;
-      console.error("Server-side cover generation failed", { documentId, key: job.pdfKey, error: String(error) });
-      await markCoverFailure(env, documentId, error, job);
-      await writeCoverUsage(env, usage);
-    }
-  }
-
-  console.info("Server-side cover and thumbnail queue batch", {
-    day, bootstrapQueued: bootstrap.queued, pending: pending.length,
-    attempted, generated, thumbnailsGenerated, alreadyPresent, failed,
-    browserMsUsed: usage.browserMsUsed, dailyBudgetMs: COVER_DAILY_BROWSER_BUDGET_MS
-  });
-
   let thumbnailsGenerated = 0;
   if (attempted < maxPerRun && usage.browserMsUsed < COVER_DAILY_BROWSER_BUDGET_MS) {
     try {
@@ -1116,6 +1074,49 @@ async function processMissingCoverThumbnails(env, maxPerRun = 1) {
       console.error("Thumbnail backfill scan failed", String(error));
     }
   }
+
+
+  for (const entry of pending) {
+    if (attempted >= maxPerRun || usage.browserMsUsed >= COVER_DAILY_BROWSER_BUDGET_MS) break;
+    const documentId = entry.key.slice("cover-jobs/".length, -".json".length);
+    const job = await getCoverRetryState(env, documentId);
+    if (!job.pdfKey || !validUploadKey(job.pdfKey)) continue;
+    if (job.retryAfter > Date.now() || job.leaseUntil > Date.now()) continue;
+
+    const coverKey = "covers/" + documentId + ".jpg";
+    if (await env.BIBLIOTECA.head(coverKey)) {
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
+      alreadyPresent++;
+      continue;
+    }
+
+    // A short lease prevents concurrent cron invocations from rendering the same PDF twice.
+    const leasedUntil = Date.now() + 3 * 60 * 1000;
+    await env.BIBLIOTECA.put(coverJobKey(documentId), JSON.stringify({
+      ...job, documentId, status: "processing", leaseUntil: leasedUntil,
+      updatedAt: new Date().toISOString()
+    }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+
+    attempted++;
+    try {
+      const result = await renderAndStoreCover(env, documentId, job.pdfKey);
+      usage.browserMsUsed += result.browserMsUsed || 0;
+      if (!result.alreadyExists) { usage.generated++; generated++; }
+      await env.BIBLIOTECA.delete(coverJobKey(documentId));
+      await writeCoverUsage(env, usage);
+    } catch (error) {
+      failed++;
+      console.error("Server-side cover generation failed", { documentId, key: job.pdfKey, error: String(error) });
+      await markCoverFailure(env, documentId, error, job);
+      await writeCoverUsage(env, usage);
+    }
+  }
+
+  console.info("Server-side cover and thumbnail queue batch", {
+    day, bootstrapQueued: bootstrap.queued, pending: pending.length,
+    attempted, generated, thumbnailsGenerated, alreadyPresent, failed,
+    browserMsUsed: usage.browserMsUsed, dailyBudgetMs: COVER_DAILY_BROWSER_BUDGET_MS
+  });
 
 }
 
