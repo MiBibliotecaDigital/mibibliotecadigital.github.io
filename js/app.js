@@ -637,7 +637,7 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway,onPhase=()=>{})
   const blob=await new Promise((resolve,reject)=>{
    canvas.toBlob(value=>value?resolve(value):reject(new Error('No se pudo codificar la miniatura JPEG.')),'image/jpeg',0.78);
   });
-  if(blob.size>1024*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
+  if(blob.size>512*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
   notify('subiendo a R2');
   const uploaded=await fetch(endpoint,{
    method:'PUT',
