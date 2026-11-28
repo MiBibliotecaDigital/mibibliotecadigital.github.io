@@ -584,63 +584,32 @@ async function renderCoverThumbnail(id){
   return false;
  }
 }
-async function createThumbnailFromPdf(pdfjs,record,token,gateway){
- const id=record.id,endpoint=gateway+'/thumbnail/'+encodeURIComponent(id);
- const existing=await fetch(endpoint,{method:'HEAD',headers:{Authorization:'Bearer '+token}});
- if(existing.ok&&existing.headers.get('X-Thumbnail-Variant')==='small'){
-  const cached=coverThumbnailCache.get(id);if(cached)URL.revokeObjectURL(cached);
-  coverThumbnailCache.delete(id);coverThumbnailFailed.delete(id);
-  return 'skipped';
- }
- if(!existing.ok&&existing.status!==404)throw new Error('No se pudo comprobar la miniatura · HTTP '+existing.status);
 
- const loadingTask=pdfjs.getDocument({
-  url:gateway+'/pdf/'+encodeURIComponent(id),
-  httpHeaders:{Authorization:'Bearer '+token},
-  withCredentials:false,
-  disableAutoFetch:true,
-  disableStream:true,
-  rangeChunkSize:65536,
-  isEvalSupported:false
+function createThumbnailWorker(){
+ return new Worker(new URL('./thumbnail-worker.js',import.meta.url),{type:'module',name:'biblioteca-thumbnail'});
+}
+function runThumbnailWorkerTask(worker,record,token,gateway){
+ return new Promise((resolve,reject)=>{
+  const onMessage=event=>{
+   if(event.data?.recordId!==record.id)return;
+   cleanup();resolve(event.data);
+  };
+  const onError=event=>{
+   cleanup();reject(new Error(event.message||'Falló el trabajador de miniaturas.'));
+  };
+  const onMessageError=()=>{
+   cleanup();reject(new Error('No se pudo recibir la respuesta del trabajador.'));
+  };
+  const cleanup=()=>{
+   worker.removeEventListener('message',onMessage);
+   worker.removeEventListener('error',onError);
+   worker.removeEventListener('messageerror',onMessageError);
+  };
+  worker.addEventListener('message',onMessage);
+  worker.addEventListener('error',onError);
+  worker.addEventListener('messageerror',onMessageError);
+  worker.postMessage({recordId:record.id,token,gateway});
  });
- let pdf=null,page=null,canvas=null;
- try{
-  pdf=await loadingTask.promise;
-  page=await pdf.getPage(1);
-  const base=page.getViewport({scale:1}),width=160,height=220;
-  const scale=Math.min(width/base.width,height/base.height);
-  const viewport=page.getViewport({scale});
-  canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
-  const context=canvas.getContext('2d',{alpha:false});
-  if(!context)throw new Error('No se pudo crear el lienzo de miniatura.');
-  context.fillStyle='#fff';context.fillRect(0,0,width,height);
-  const offsetX=(width-viewport.width)/2,offsetY=(height-viewport.height)/2;
-  await page.render({
-   canvasContext:context,
-   viewport,
-   transform:[1,0,0,1,offsetX,offsetY],
-   background:'rgb(255,255,255)'
-  }).promise;
-  const blob=await new Promise((resolve,reject)=>{
-   canvas.toBlob(value=>value?resolve(value):reject(new Error('No se pudo codificar la miniatura JPEG.')),'image/jpeg',0.78);
-  });
-  if(blob.size>512*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
-  const uploaded=await fetch(endpoint,{
-   method:'PUT',
-   headers:{Authorization:'Bearer '+token,'Content-Type':'image/jpeg'},
-   body:blob
-  });
-  if(!uploaded.ok)throw new Error((await uploaded.text())||('No se pudo guardar la miniatura · HTTP '+uploaded.status));
-  const result=await uploaded.json();
-  const cached=coverThumbnailCache.get(id);if(cached)URL.revokeObjectURL(cached);
-  coverThumbnailCache.delete(id);coverThumbnailFailed.delete(id);
-  return result.alreadyExists?'skipped':'created';
- }finally{
-  try{page?.cleanup()}catch{}
-  if(pdf){try{await pdf.destroy()}catch{}}
-  else{try{await loadingTask.destroy()}catch{}}
-  if(canvas){canvas.width=0;canvas.height=0}
- }
 }
 async function runThumbnailBatch(){
  if(thumbnailBatchRunning)return;
@@ -658,22 +627,43 @@ async function runThumbnailBatch(){
  setProgress(0,documents.length);
  setStatus('Preparando '+documents.length+' PDFs…');
  let completed=0,created=0,skipped=0,failed=0,nextIndex=0;
- const errors=[];
+ const errors=[],pool=[];
  try{
   const {data:{session},error}=await db.auth.getSession();
   if(error)throw error;
   if(!session?.access_token)throw new Error('La sesión de administrador expiró.');
-  const gateway=c.pdfGatewayUrl.replace(/\/+$/,'');
-  const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
-  const worker=async()=>{
+  if(typeof Worker==='undefined')throw new Error('Este navegador no admite Web Workers.');
+  const gateway=c.pdfGatewayUrl.replace(/\\/+$/,'');
+  const workerCount=Math.min(4,documents.length);
+  for(let i=0;i<workerCount;i++)pool.push(createThumbnailWorker());
+  setStatus('Procesando con '+workerCount+' trabajadores en segundo plano…');
+  const runSlot=async slot=>{
+   let worker=pool[slot];
    while(true){
-    const index=nextIndex++;
-    if(index>=documents.length)return;
-    const record=documents[index];
+    const taskIndex=nextIndex++;
+    if(taskIndex>=documents.length)break;
+    const record=documents[taskIndex];
     try{
-     const result=await createThumbnailFromPdf(pdfjs,record,session.access_token,gateway);
-     if(result==='created')created++;else skipped++;
+     let response,lastWorkerError;
+     for(let attempt=0;attempt<3;attempt++){
+      try{
+       response=await runThumbnailWorkerTask(worker,record,session.access_token,gateway);
+       lastWorkerError=null;
+       break;
+      }catch(workerError){
+       lastWorkerError=workerError;
+       worker.terminate();
+       if(attempt===2)break;
+       worker=createThumbnailWorker();pool[slot]=worker;
+      }
+     }
+     if(lastWorkerError)throw lastWorkerError;
+     if(!response?.ok)throw new Error(response?.error||'Error desconocido al generar la miniatura.');
+     if(response.result==='created'){
+      created++;
+      const cached=coverThumbnailCache.get(record.id);if(cached)URL.revokeObjectURL(cached);
+      coverThumbnailCache.delete(record.id);coverThumbnailFailed.delete(record.id);
+     }else skipped++;
     }catch(error){
      failed++;errors.push({title:record.title||record.id,message:String(error?.message||error)});
      console.error('Thumbnail batch failed for '+record.id,error);
@@ -683,15 +673,18 @@ async function runThumbnailBatch(){
      setStatus(completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores');
     }
    }
+   worker.terminate();
   };
-  await Promise.all([worker(),worker()]);
+  await Promise.all(pool.map((_,slot)=>runSlot(slot)));
   const summary='Finalizado: '+created+' miniaturas generadas, '+skipped+' ya existentes y '+failed+' errores.';
   setStatus(summary+(errors.length?' Primer error: '+errors[0].title+' · '+errors[0].message:''));
   toast(summary);
  }catch(error){
+  pool.forEach(worker=>{try{worker.terminate()}catch{}});
   setStatus('El proceso se interrumpió: '+String(error?.message||error)+' · Las miniaturas ya subidas permanecen guardadas.');
   toast('No se pudo completar el procesamiento: '+String(error?.message||error));
  }finally{
+  pool.forEach(worker=>{try{worker.terminate()}catch{}});
   thumbnailBatchRunning=false;
   setButton(false,'Generar miniaturas faltantes');
  }
