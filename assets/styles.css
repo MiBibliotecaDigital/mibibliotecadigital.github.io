@@ -131,3 +131,45 @@
 /* Grid covers fill the card and crop the lower part of portrait pages, keeping the top visible. */
 .grid .cover.cover-thumbnail{height:220px;width:100%;padding:0;}
 .grid .cover-image{width:100%;height:100%;object-fit:cover;object-position:center top;}
+
+/* Responsive cover presentation: image resolution stays high, display size follows the card. */
+.grid .cover.cover-thumbnail{
+ height:auto;
+ aspect-ratio:1.6 / 1;
+ min-height:140px;
+ max-height:220px;
+}
+.grid .cover-image{
+ width:100%;
+ height:100%;
+ object-fit:cover;
+ object-position:center top;
+}
+@media(max-width:700px){
+ .grid .cover.cover-thumbnail{
+  aspect-ratio:1.65 / 1;
+  min-height:130px;
+  max-height:205px;
+ }
+ .book-list .book{
+  grid-template-columns:clamp(88px,28vw,112px) minmax(0,1fr);
+ }
+ .book-list .cover{
+  min-height:128px;
+  height:100%;
+ }
+ .book-list .cover-image{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+ }
+}
+@media(max-width:360px){
+ .grid .cover.cover-thumbnail{
+  min-height:120px;
+  max-height:180px;
+ }
+ .book-list .book{
+  grid-template-columns:88px minmax(0,1fr);
+ }
+}
