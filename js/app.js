@@ -645,18 +645,18 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway){
 async function runThumbnailBatch(){
  if(thumbnailBatchRunning)return;
  if(role!=='admin'||!live||!db||!c.pdfGatewayUrl)return toast('Esta tarea requiere una sesión real de administrador.');
- const button=document.querySelector('#generate-thumbnails');
- const status=document.querySelector('#thumbnail-batch-status');
- const progress=document.querySelector('#thumbnail-batch-progress');
+ const setStatus=value=>{const el=document.querySelector('#thumbnail-batch-status');if(el)el.textContent=value};
+ const setProgress=(value,max)=>{const el=document.querySelector('#thumbnail-batch-progress');if(el){if(max!==undefined)el.max=max;el.value=value}};
+ const setButton=(disabled,label)=>{const el=document.querySelector('#generate-thumbnails');if(el){el.disabled=disabled;el.textContent=label}};
  const documents=[...new Map([...books,...pendingDocs]
   .filter(x=>x.provider==='r2'&&x.uploadStatus==='stored'&&x.id)
   .map(x=>[x.id,x])).values()];
  if(!documents.length)return toast('No hay PDFs guardados disponibles para procesar.');
 
  thumbnailBatchRunning=true;
- if(button){button.disabled=true;button.textContent='Procesando…'}
- if(progress){progress.max=documents.length;progress.value=0}
- if(status)status.textContent='Preparando '+documents.length+' PDFs…';
+ setButton(true,'Procesando…');
+ setProgress(0,documents.length);
+ setStatus('Preparando '+documents.length+' PDFs…');
  let completed=0,created=0,skipped=0,failed=0,nextIndex=0;
  const errors=[];
  try{
@@ -679,21 +679,21 @@ async function runThumbnailBatch(){
      console.error('Thumbnail batch failed for '+record.id,error);
     }finally{
      completed++;
-     if(progress)progress.value=completed;
-     if(status)status.textContent=completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores';
+     setProgress(completed);
+     setStatus(completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores');
     }
    }
   };
   await Promise.all([worker(),worker()]);
   const summary='Finalizado: '+created+' miniaturas generadas, '+skipped+' ya existentes y '+failed+' errores.';
-  if(status)status.textContent=summary+(errors.length?' Primer error: '+errors[0].title+' · '+errors[0].message:'');
+  setStatus(summary+(errors.length?' Primer error: '+errors[0].title+' · '+errors[0].message:''));
   toast(summary);
  }catch(error){
-  if(status)status.textContent='El proceso se interrumpió: '+String(error?.message||error)+' · Las miniaturas ya subidas permanecen guardadas.';
+  setStatus('El proceso se interrumpió: '+String(error?.message||error)+' · Las miniaturas ya subidas permanecen guardadas.');
   toast('No se pudo completar el procesamiento: '+String(error?.message||error));
  }finally{
   thumbnailBatchRunning=false;
-  if(button){button.disabled=false;button.textContent='Generar miniaturas faltantes'}
+  setButton(false,'Generar miniaturas faltantes');
  }
 }
 function drainCoverQueue(){
