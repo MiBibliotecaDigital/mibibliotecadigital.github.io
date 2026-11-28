@@ -586,9 +586,11 @@ async function renderCoverThumbnail(id){
 }
 
 
-async function createThumbnailFromPdf(pdfjs,record,token,gateway){
+async function createThumbnailFromPdf(pdfjs,record,token,gateway,onPhase=()=>{}){
  const id=record.id,endpoint=gateway+'/thumbnail/'+encodeURIComponent(id);
  const authorization={Authorization:'Bearer '+token};
+ const notify=(phase,renderMode=null)=>{try{onPhase(phase,renderMode)}catch{}};
+ notify('comprobando miniatura');
  const existing=await fetch(endpoint,{method:'HEAD',headers:authorization});
  if(existing.ok&&existing.headers.get('X-Thumbnail-Variant')==='small'){
   const cached=coverThumbnailCache.get(id);if(cached)URL.revokeObjectURL(cached);
@@ -597,6 +599,7 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway){
  }
  if(!existing.ok&&existing.status!==404)throw new Error('No se pudo comprobar la miniatura · HTTP '+existing.status);
 
+ notify('descargando y analizando PDF');
  const loadingTask=pdfjs.getDocument({
   url:gateway+'/pdf/'+encodeURIComponent(id),
   httpHeaders:authorization,
@@ -607,7 +610,7 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway){
   isEvalSupported:false,
   disableWorkerRendering:false
  });
- let pdf=null,page=null,canvas=null;
+ let pdf=null,page=null,canvas=null,renderMonitor=null;
  try{
   pdf=await loadingTask.promise;
   page=await pdf.getPage(1);
@@ -615,16 +618,28 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway){
   const scale=Math.min(width/base.width,height/base.height);
   const viewport=page.getViewport({scale});
   canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
-  await page.render({
+  notify('preparando renderizado');
+  const renderTask=page.render({
    canvas,
    viewport,
    transform:[1,0,0,1,(width-viewport.width)/2,(height-viewport.height)/2],
    background:'rgb(255,255,255)'
-  }).promise;
+  });
+  const reportRendererMode=()=>notify('renderizando',renderTask.isWorkerRendering?'worker':'principal');
+  reportRendererMode();
+  renderMonitor=setInterval(reportRendererMode,100);
+  try{
+   await renderTask.promise;
+  }finally{
+   if(renderMonitor!==null)clearInterval(renderMonitor);
+   renderMonitor=null;
+  }
+  notify('codificando JPEG');
   const blob=await new Promise((resolve,reject)=>{
    canvas.toBlob(value=>value?resolve(value):reject(new Error('No se pudo codificar la miniatura JPEG.')),'image/jpeg',0.78);
   });
   if(blob.size>512*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
+  notify('subiendo a R2');
   const uploaded=await fetch(endpoint,{
    method:'PUT',
    headers:{...authorization,'Content-Type':'image/jpeg'},
@@ -636,6 +651,7 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway){
   coverThumbnailCache.delete(id);coverThumbnailFailed.delete(id);
   return result.alreadyExists?'skipped':'created';
  }finally{
+  if(renderMonitor!==null)clearInterval(renderMonitor);
   try{page?.cleanup()}catch{}
   if(pdf){try{await pdf.destroy()}catch{}}
   else{try{await loadingTask.destroy()}catch{}}
@@ -656,9 +672,30 @@ async function runThumbnailBatch(){
  thumbnailBatchRunning=true;
  setButton(true,'Procesando…');
  setProgress(0,documents.length);
- setStatus('Preparando '+documents.length+' PDFs…');
+ const workerCount=Math.min(4,documents.length);
  let completed=0,created=0,skipped=0,failed=0,nextIndex=0;
- const errors=[];
+ let maxActiveJobs=0,maxWorkerRenderers=0,maxMainRenderers=0,renderAttempts=0;
+ const errors=[],activeJobs=new Map();
+ const updateStatus=()=>{
+  const active=[...activeJobs.values()];
+  const rendering=active.filter(job=>job.phase==='renderizando');
+  const workerRenderers=rendering.filter(job=>job.renderMode==='worker').length;
+  const mainRenderers=rendering.filter(job=>job.renderMode==='principal').length;
+  const startingRenderers=rendering.filter(job=>job.renderMode===null).length;
+  const otherStages=active.length-rendering.length;
+  maxActiveJobs=Math.max(maxActiveJobs,active.length);
+  maxWorkerRenderers=Math.max(maxWorkerRenderers,workerRenderers);
+  maxMainRenderers=Math.max(maxMainRenderers,mainRenderers);
+  setStatus(
+   completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores'+
+   ' | Activas '+active.length+'/'+workerCount+
+   ' · Renderer Worker '+workerRenderers+
+   ' · hilo principal '+mainRenderers+
+   (startingRenderers?' · iniciando '+startingRenderers:'')+
+   (otherStages?' · otras etapas '+otherStages:'')
+  );
+ };
+ updateStatus();
  try{
   const {data:{session},error}=await db.auth.getSession();
   if(error)throw error;
@@ -667,30 +704,41 @@ async function runThumbnailBatch(){
   const pdfjs=await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.min.mjs');
   pdfjs.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.worker.min.mjs';
   pdfjs.GlobalWorkerOptions.rendererSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.renderer.min.mjs';
-  const workerCount=Math.min(4,documents.length);
-  setStatus('Procesando con hasta '+workerCount+' workers de análisis y renderizado…');
   const worker=async()=>{
    while(true){
     const index=nextIndex++;
     if(index>=documents.length)return;
-    const record=documents[index];
+    const record=documents[index],id=record.id;
+    activeJobs.set(id,{phase:'comprobando miniatura',renderMode:null,renderStarted:false});
+    updateStatus();
     try{
-     const result=await createThumbnailFromPdf(pdfjs,record,session.access_token,gateway);
+     const result=await createThumbnailFromPdf(pdfjs,record,session.access_token,gateway,(phase,renderMode)=>{
+      const job=activeJobs.get(id);if(!job)return;
+      if(phase==='renderizando'&&!job.renderStarted){job.renderStarted=true;renderAttempts++}
+      job.phase=phase;job.renderMode=renderMode;
+      updateStatus();
+     });
      if(result==='created')created++;else skipped++;
     }catch(error){
-     failed++;errors.push({title:record.title||record.id,message:String(error?.message||error)});
-     console.error('Thumbnail batch failed for '+record.id,error);
+     failed++;errors.push({title:record.title||id,message:String(error?.message||error)});
+     console.error('Thumbnail batch failed for '+id,error);
     }finally{
+     activeJobs.delete(id);
      completed++;
      setProgress(completed);
-     setStatus(completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores');
+     updateStatus();
     }
    }
   };
   await Promise.all(Array.from({length:workerCount},()=>worker()));
-  const summary='Finalizado: '+created+' miniaturas generadas, '+skipped+' ya existentes y '+failed+' errores.';
+  const rendererSummary=renderAttempts===0
+   ? 'No hubo PDFs que necesitaran renderizado'
+   : maxWorkerRenderers>0
+    ? 'pico de '+maxWorkerRenderers+' Renderer Workers simultáneos'+(maxMainRenderers?' y '+maxMainRenderers+' renderizados en hilo principal':'')
+    : 'PDF.js recurrió al hilo principal en los '+renderAttempts+' renderizados';
+  const summary='Finalizado: '+created+' miniaturas generadas, '+skipped+' ya existentes y '+failed+' errores. Pico: '+maxActiveJobs+'/'+workerCount+' PDFs simultáneos; '+rendererSummary+'.';
   setStatus(summary+(errors.length?' Primer error: '+errors[0].title+' · '+errors[0].message:''));
-  toast(summary);
+  toast('Lote finalizado: '+created+' generadas, '+skipped+' existentes y '+failed+' errores.');
  }catch(error){
   setStatus('El proceso se interrumpió: '+String(error?.message||error)+' · Las miniaturas ya subidas permanecen guardadas.');
   toast('No se pudo completar el procesamiento: '+String(error?.message||error));
