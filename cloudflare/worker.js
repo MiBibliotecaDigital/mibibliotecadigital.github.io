@@ -577,6 +577,8 @@ async function deleteLibraryDocument(request, env, headers, documentId) {
     try {
       await env.BIBLIOTECA.delete(document.r2_key);
       await env.BIBLIOTECA.delete("covers/" + documentId + ".jpg");
+      await env.BIBLIOTECA.delete("thumbnails/" + documentId + ".jpg");
+      await env.BIBLIOTECA.delete("thumbnail-jobs/" + documentId + ".json");
       await env.BIBLIOTECA.delete(coverJobKey(documentId));
     } catch (error) {
       storageCleanupPending = true;
@@ -600,11 +602,18 @@ async function getLibraryThumbnail(request, env, headers, documentId) {
   if (!response.ok) return reply("Authorization service unavailable", 502, headers);
   const rows = await response.json();
   if (!Array.isArray(rows) || !rows[0]) return reply("Thumbnail not found", 404, headers);
-  const object = await env.BIBLIOTECA.get("covers/" + documentId + ".jpg");
+
+  let object = await env.BIBLIOTECA.get("thumbnails/" + documentId + ".jpg");
+  const isSmallThumbnail = !!object;
+  if (!object) object = await env.BIBLIOTECA.get("covers/" + documentId + ".jpg");
   if (!object) return reply("Thumbnail not generated", 404, headers);
+
   headers.set("Content-Type", "image/jpeg");
   headers.set("Content-Length", String(object.size));
-  headers.set("Cache-Control", "private, max-age=604800, immutable");
+  headers.set("Cache-Control", isSmallThumbnail
+    ? "private, max-age=31536000, immutable"
+    : "private, max-age=60, must-revalidate");
+  headers.set("X-Thumbnail-Variant", isSmallThumbnail ? "small" : "cover-fallback");
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
@@ -736,6 +745,134 @@ async function serveInternalCoverSource(request, env, headers, documentId) {
   if (!object?.body) return reply("PDF not found", 404, headers);
   return new Response(object.body, { status: range ? 206 : 200, headers });
 }
+
+async function createThumbnailSignature(env, documentId, expires) {
+  const secret = String(env.COVER_RENDER_SECRET || env.ISBNLAB_API_TOKEN || "");
+  if (secret.length < 16) throw new Error("Thumbnail signing secret is not configured");
+  const cryptoKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const payload = new TextEncoder().encode("thumbnail-v1\n" + documentId + "\n" + expires);
+  return encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, payload)));
+}
+
+async function verifyThumbnailSignature(request, env, documentId) {
+  const url = new URL(request.url);
+  const expires = Number(url.searchParams.get("exp"));
+  const signature = url.searchParams.get("sig") || "";
+  const now = Math.floor(Date.now() / 1000);
+  if (!UUID_RE.test(documentId || "") || !Number.isSafeInteger(expires) ||
+      expires <= now || expires > now + 15 * 60 ||
+      !/^[A-Za-z0-9_-]{40,50}$/.test(signature)) return null;
+
+  const expected = await createThumbnailSignature(env, documentId, expires);
+  if (signature !== expected) return null;
+  const metadata = await env.BIBLIOTECA.head("covers/" + documentId + ".jpg");
+  if (!metadata || metadata.customMetadata?.documentId !== documentId) return null;
+  return { metadata, expires, signature };
+}
+
+function makeThumbnailRenderHtml(sourceUrl) {
+  const script = [
+    "const image = document.getElementById('thumbnail');",
+    "image.onload = () => { document.body.dataset.thumbnailReady = '1'; };",
+    "image.onerror = () => { document.body.dataset.thumbnailError = '1'; };",
+    "image.src = " + JSON.stringify(sourceUrl) + ";"
+  ].join("\n");
+  return [
+    "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+    "<style>html,body{margin:0;padding:0;width:180px;height:240px;background:#fff;overflow:hidden}body{display:flex;justify-content:center;align-items:center}img{display:block;width:160px;height:220px;object-fit:contain;background:#fff}</style>",
+    "</head><body><img id='thumbnail' alt=''><script>" + script + "</script></body></html>"
+  ].join("");
+}
+
+async function serveInternalThumbnailRender(request, env, headers, documentId) {
+  if (request.method !== "GET") return reply("Method not allowed", 405, headers);
+  const access = await verifyThumbnailSignature(request, env, documentId);
+  if (!access) return reply("Not found", 404, headers);
+  const sourceUrl = "/__thumbnail-source/" + documentId +
+    "?exp=" + access.expires + "&sig=" + encodeURIComponent(access.signature);
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  return new Response(makeThumbnailRenderHtml(sourceUrl), { status: 200, headers });
+}
+
+async function serveInternalThumbnailSource(request, env, headers, documentId) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    headers.set("Allow", "GET, HEAD");
+    return reply("Method not allowed", 405, headers);
+  }
+  const access = await verifyThumbnailSignature(request, env, documentId);
+  if (!access) return reply("Not found", 404, headers);
+  const object = await env.BIBLIOTECA.get("covers/" + documentId + ".jpg");
+  if (!object) return reply("Source cover not found", 404, headers);
+  headers.set("Content-Type", "image/jpeg");
+  headers.set("Content-Length", String(object.size));
+  headers.set("Cache-Control", "private, no-store");
+  headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "no-referrer");
+  if (object.httpEtag) headers.set("ETag", object.httpEtag);
+  if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+  return new Response(object.body, { status: 200, headers });
+}
+
+async function renderAndStoreThumbnail(env, documentId) {
+  if (!env.BROWSER || typeof env.BROWSER.quickAction !== "function") {
+    throw new Error("Cloudflare Browser Run binding BROWSER is unavailable");
+  }
+  const thumbnailKey = "thumbnails/" + documentId + ".jpg";
+  if (await env.BIBLIOTECA.head(thumbnailKey)) return { alreadyExists: true, browserMsUsed: 0 };
+  const source = await env.BIBLIOTECA.head("covers/" + documentId + ".jpg");
+  if (!source || source.customMetadata?.documentId !== documentId) {
+    throw new Error("Source cover is not available or its document ID does not match");
+  }
+
+  const expires = Math.floor(Date.now() / 1000) + 10 * 60;
+  const signature = await createThumbnailSignature(env, documentId, expires);
+  const gateway = String(env.COVER_GATEWAY_ORIGIN || "").replace(/\/+$/, "");
+  if (!gateway) throw new Error("COVER_GATEWAY_ORIGIN is not configured");
+  const renderUrl = gateway + "/__thumbnail-render/" + documentId +
+    "?exp=" + expires + "&sig=" + encodeURIComponent(signature);
+
+  const screenshot = await env.BROWSER.quickAction("screenshot", {
+    url: renderUrl,
+    selector: "#thumbnail",
+    viewport: { width: 180, height: 240, deviceScaleFactor: 1 },
+    gotoOptions: { waitUntil: "networkidle0", timeout: 60000 },
+    waitForSelector: { selector: "body[data-thumbnail-ready='1']", timeout: 60000 },
+    screenshotOptions: { type: "jpeg", quality: 68, optimizeForSpeed: true, omitBackground: false }
+  });
+  if (!screenshot?.ok) {
+    let detail = "";
+    try { detail = await screenshot.text(); } catch {}
+    throw new Error("Browser Run thumbnail screenshot failed · HTTP " +
+      (screenshot?.status || "unknown") + (detail ? " · " + detail.slice(0, 240) : ""));
+  }
+  const contentType = (screenshot.headers.get("Content-Type") || "").toLowerCase();
+  if (!contentType.includes("image/jpeg")) {
+    throw new Error("Browser Run returned unexpected thumbnail image type: " + (contentType || "unknown"));
+  }
+  const bytes = new Uint8Array(await screenshot.arrayBuffer());
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+    throw new Error("Browser Run did not return a valid thumbnail JPEG");
+  }
+  if (bytes.length > 128 * 1024) throw new Error("Rendered thumbnail exceeds 128 KiB");
+
+  const browserMsUsed = Math.max(0, Number(screenshot.headers.get("X-Browser-Ms-Used")) || 3000);
+  await env.BIBLIOTECA.put(thumbnailKey, bytes, {
+    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=31536000, immutable" },
+    customMetadata: {
+      documentId, generatedBy: "cloudflare-browser-run",
+      sourceKey: "covers/" + documentId + ".jpg",
+      width: "160", height: "220"
+    }
+  });
+  return { alreadyExists: false, size: bytes.length, browserMsUsed };
+}
+
 async function renderAndStoreCover(env, documentId, pdfKey) {
   if (!env.BROWSER || typeof env.BROWSER.quickAction !== "function") throw new Error("Cloudflare Browser Run binding BROWSER is unavailable");
   const coverKey = "covers/" + documentId + ".jpg";
@@ -927,11 +1064,59 @@ async function processMissingCoverThumbnails(env, maxPerRun = 1) {
     }
   }
 
-  console.info("Server-side cover queue batch", {
+  console.info("Server-side cover and thumbnail queue batch", {
     day, bootstrapQueued: bootstrap.queued, pending: pending.length,
-    attempted, generated, alreadyPresent, failed,
+    attempted, generated, thumbnailsGenerated, alreadyPresent, failed,
     browserMsUsed: usage.browserMsUsed, dailyBudgetMs: COVER_DAILY_BROWSER_BUDGET_MS
   });
+
+  let thumbnailsGenerated = 0;
+  if (attempted < maxPerRun && usage.browserMsUsed < COVER_DAILY_BROWSER_BUDGET_MS) {
+    try {
+      const [coverObjects, thumbnailObjects] = await Promise.all([
+        listAllR2Objects(env, "covers/", ["customMetadata"]),
+        listAllR2Objects(env, "thumbnails/")
+      ]);
+      const existingThumbnails = new Set(thumbnailObjects.map(object => object.key));
+      const pendingCover = coverObjects.find(object => {
+        const match = object.key.match(/^covers\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.jpg$/i);
+        return match && !existingThumbnails.has("thumbnails/" + match[1] + ".jpg");
+      });
+
+      if (pendingCover) {
+        const documentId = pendingCover.key.slice("covers/".length, -".jpg".length);
+        const lockKey = "thumbnail-jobs/" + documentId + ".json";
+        const lockObject = await env.BIBLIOTECA.get(lockKey);
+        let locked = false;
+        if (lockObject) {
+          try { locked = Number((await lockObject.json()).leaseUntil) > Date.now(); } catch {}
+        }
+        if (!locked) {
+          await env.BIBLIOTECA.put(lockKey, JSON.stringify({
+            documentId, leaseUntil: Date.now() + 3 * 60 * 1000,
+            updatedAt: new Date().toISOString()
+          }), { httpMetadata: { contentType: "application/json", cacheControl: "private, no-store" } });
+          attempted++;
+          try {
+            const result = await renderAndStoreThumbnail(env, documentId);
+            usage.browserMsUsed += result.browserMsUsed || 0;
+            if (!result.alreadyExists) { usage.generated++; thumbnailsGenerated++; }
+            await env.BIBLIOTECA.delete(lockKey);
+            await writeCoverUsage(env, usage);
+          } catch (error) {
+            failed++;
+            console.error("Server-side thumbnail generation failed", { documentId, error: String(error) });
+            await env.BIBLIOTECA.delete(lockKey);
+            await writeCoverUsage(env, usage);
+          }
+        }
+      }
+    } catch (error) {
+      failed++;
+      console.error("Thumbnail backfill scan failed", String(error));
+    }
+  }
+
 }
 
 export default {
@@ -940,7 +1125,7 @@ export default {
     const origin = request.headers.get("Origin");
     const headers = corsHeaders(origin, appOrigin);
     const requestPath = new URL(request.url).pathname;
-    const internalCoverRoute = /^\/__cover-(?:render|source)\//.test(requestPath);
+    const internalCoverRoute = /^\/__(?:cover|thumbnail)-(?:render|source)\//.test(requestPath);
 
     if (origin && origin !== appOrigin && !internalCoverRoute) {
       return reply("Origin not allowed", 403, headers);
@@ -961,6 +1146,16 @@ export default {
     if (renderSourceMatch && UUID_RE.test(renderSourceMatch[1])) {
       try { return await serveInternalCoverSource(request, env, headers, renderSourceMatch[1]); }
       catch (error) { console.error("Internal cover PDF source failed", error); return reply("Cover PDF source unavailable", 502, headers); }
+    }
+    const thumbnailRenderMatch = pathname.match(/^\/__thumbnail-render\/([^/]+)$/);
+    if (thumbnailRenderMatch && UUID_RE.test(thumbnailRenderMatch[1])) {
+      try { return await serveInternalThumbnailRender(request, env, headers, thumbnailRenderMatch[1]); }
+      catch (error) { console.error("Internal thumbnail render page failed", error); return reply("Thumbnail render page unavailable", 502, headers); }
+    }
+    const thumbnailSourceMatch = pathname.match(/^\/__thumbnail-source\/([^/]+)$/);
+    if (thumbnailSourceMatch && UUID_RE.test(thumbnailSourceMatch[1])) {
+      try { return await serveInternalThumbnailSource(request, env, headers, thumbnailSourceMatch[1]); }
+      catch (error) { console.error("Internal thumbnail source failed", error); return reply("Thumbnail source unavailable", 502, headers); }
     }
     if (pathname === "/catalog/google-books" && request.method === "GET") return lookupGoogleBooks(request, env, headers);
     if (pathname === "/catalog/isbnlab" && request.method === "GET") return lookupIsbnLabBook(request, env, headers);
