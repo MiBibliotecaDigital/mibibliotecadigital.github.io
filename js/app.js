@@ -574,7 +574,7 @@ async function renderCoverThumbnail(id){
   const {data:{session},error}=await db.auth.getSession();
   if(error)throw error;if(!session?.access_token)throw new Error('Session unavailable for cover loading');
   const gateway=c.pdfGatewayUrl.replace(/\/+$/,'');
-  const saved=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id),{headers:{Authorization:'Bearer '+session.access_token}});
+  const saved=await fetch(gateway+'/thumbnail/'+encodeURIComponent(id)+'?v=420x580',{headers:{Authorization:'Bearer '+session.access_token}});
   if(saved.status===404){coverThumbnailFailed.add(id);return false}
   if(!saved.ok)throw new Error('Thumbnail request failed · HTTP '+saved.status);
   const blob=await saved.blob();if(epoch!==coverSessionEpoch)return false;
@@ -587,7 +587,7 @@ async function renderCoverThumbnail(id){
 
 
 async function createThumbnailFromPdf(pdfjs,record,token,gateway,onPhase=()=>{}){
- const id=record.id,endpoint=gateway+'/thumbnail/'+encodeURIComponent(id);
+ const id=record.id,endpoint=gateway+'/thumbnail/'+encodeURIComponent(id)+'?v=420x580';
  const authorization={Authorization:'Bearer '+token};
  const notify=(phase,renderMode=null)=>{try{onPhase(phase,renderMode)}catch{}};
  notify('comprobando miniatura');
@@ -612,15 +612,16 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway,onPhase=()=>{})
  try{
   pdf=await loadingTask.promise;
   page=await pdf.getPage(1);
-  const base=page.getViewport({scale:1}),width=160,height=220;
-  const scale=Math.min(width/base.width,height/base.height);
+  const base=page.getViewport({scale:1});
+  const scale=Math.min(420/base.width,580/base.height,1.2);
   const viewport=page.getViewport({scale});
+  const width=Math.max(1,Math.ceil(viewport.width));
+  const height=Math.max(1,Math.ceil(viewport.height));
   canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
   notify('preparando renderizado');
   const renderTask=page.render({
    canvas,
    viewport,
-   transform:[1,0,0,1,(width-viewport.width)/2,(height-viewport.height)/2],
    background:'rgb(255,255,255)'
   });
   const reportRendererMode=()=>notify('renderizando',renderTask.isWorkerRendering?'worker':'principal');
@@ -636,7 +637,7 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway,onPhase=()=>{})
   const blob=await new Promise((resolve,reject)=>{
    canvas.toBlob(value=>value?resolve(value):reject(new Error('No se pudo codificar la miniatura JPEG.')),'image/jpeg',0.78);
   });
-  if(blob.size>512*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
+  if(blob.size>1024*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
   notify('subiendo a R2');
   const uploaded=await fetch(endpoint,{
    method:'PUT',
