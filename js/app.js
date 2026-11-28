@@ -1,6 +1,7 @@
 import{createClient}from'https://esm.sh/@supabase/supabase-js@2';
 const c=window.BIBLIOTECA_CONFIG||{},live=!!(c.supabaseUrl&&c.supabaseAnonKey&&c.demoMode===false),db=live?createClient(c.supabaseUrl,c.supabaseAnonKey):null,root=document.querySelector('#app');
 let me=null,role='reader',page='home',query='',books=[],pendingDocs=[],users=[],collections=[],selectedFiles=[],uploadInProgress=false,metadataInProgress=false,metadataCancelRequested=false,metadataQueueProgress={done:0,total:0,failed:0},favs=new Set(),history=[],sortBy='title',sortDir='asc',viewMode='grid',density=3,filterCollection='',filterCategory='',bookAdminStatus='all',selectedBookIds=new Set();
+let thumbnailBatchRunning=false;
 const coverThumbnailCache=new Map(),coverThumbnailPending=new Set(),coverThumbnailFailed=new Set(),coverThumbnailPromises=new Map();let coverObserver=null,coverQueue=[],coverWorkers=0;let coverSessionEpoch=0;
 const sample=[['d1','Atlas del Archipielago Luminario','Elena Mar de Papel','Geografia imaginaria','atlas-luminario.pdf','sea'],['d2','Herbario de Arrecife Azul','Tomas del Invernadero','Naturaleza','herbario-arrecife-azul.pdf','leaf'],['d3','Cuaderno musical de Ciudad Resonante','Mara Afinacion','Musica','cuaderno-musica-ciudad.pdf','amber']].map(x=>({id:x[0],title:x[1],author:x[2],category:x[3],year:2026,pages:1,size:'PDF de muestra',provider:'demo',path:'/demo/pdfs/'+x[4],tone:x[5]}));
 const demoUsers=[{name:'Administracion de prueba',email:'admin@biblioteca.local',role:'admin',status:'Activo'},{name:'Lector de ejemplo',email:'demo@biblioteca.local',role:'reader',status:'Activo'}];
@@ -527,8 +528,8 @@ function collectionModal(existing=null){const m=document.createElement('div');m.
 function addCollection(){if(role==='admin')collectionModal()}
 function editCollection(id){const c=collections.find(x=>x.id===id);if(c&&role==='admin')collectionModal(c)}
 async function deleteCollection(id){const c=collections.find(x=>x.id===id);if(!c||role!=='admin')return;const count=books.filter(b=>b.collectionId===id).length+pendingDocs.filter(b=>b.collectionId===id).length;if(!confirm('¿Eliminar la colección "'+c.name+'"'+(count?' y quitarla de '+count+' fichas':'')+'? Los libros y sus PDFs no se borrarán.'))return;const {error:moveError}=await db.from('documents').update({collection_id:null}).eq('collection_id',id);if(moveError)return toast('No se pudieron liberar los libros: '+moveError.message);const {error}=await db.from('collections').delete().eq('id',id);if(error)return toast('No se pudo eliminar: '+error.message);toast('Colección eliminada; los libros se conservaron.');await loadUser(me)}
-function content(){if(page==='account')return accountPage();if(page==='upload'&&role==='admin')return uploadPage();if((page==='books'||page==='pending')&&role==='admin')return booksPage();if(page==='users'&&role==='admin')return usersPage();if(page==='settings'&&role==='admin')return '<div class="heading"><h1>Configuración</h1></div><div class="panel"><h2>Almacenamiento privado</h2><p>Bucket R2 privado conectado. Los PDFs se entregan por pasarela autenticada.</p><h2>Miniaturas de portada</h2><p>La generación se ejecuta en Cloudflare, sin depender de que la biblioteca esté abierta. El servidor procesa los PDFs pendientes y guarda cada primera página como JPEG en <code>covers/</code> dentro de R2. Las imágenes guardadas quedan disponibles para todas las sesiones autorizadas.</p><p class="muted">El procesamiento programado se limita a 8 minutos de Browser Run por día y continúa al día siguiente si quedan archivos pendientes.</p><h2>Metadatos</h2><p>Los nuevos PDFs se analizan al subirlos; las sugerencias deben revisarse antes de publicar.</p></div>';if(page==='collections')return collectionsPage();let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':'Tu biblioteca',controls=page==='catalog'||page==='favorites'?catalogControls():'';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu biblioteca organizada en un solo lugar.</p></div><span class="tag">'+list.length+' libros</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>'+collections.length+'</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div><h2 class="section-heading">Tus colecciones</h2>'+collectionShelves():'')+controls+(page==='catalog'||page==='favorites'?'<div class="chips">'+[...new Set(books.map(x=>x.category).filter(Boolean))].sort().map(x=>'<button data-cat="'+esc(x)+'">'+esc(x)+'</button>').join('')+'<button data-clear-filters="1">Limpiar filtros</button></div>':'')+'<div class="'+(viewMode==='list'?'book-list':'grid')+'" style="--book-columns:'+density+'">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'PDF ficticios de demostración.')+'</p>'}
-function render(){window.__BIBLIOTECA_READY__=true;root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACIÓN · sin autenticación real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Inicio')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+nav('account','♙ Mi cuenta')+(role==='admin'?'<small>ADMINISTRACIÓN</small>'+nav('users','♟ Usuarios')+nav('books','▤ Administrar libros')+nav('upload','＋ Subir PDFs')+nav('settings','⚙ Configuración'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesión</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar título, autor o tema..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#search').oninput=e=>{query=e.target.value;const g=document.querySelector('.grid,.book-list');if(g)g.innerHTML=filtered().map(card).join('');bindBooks();if(page==='books'||page==='pending')bindBookManagement()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';filterCategory=x.dataset.cat;filterCollection='';render()});document.querySelector('#add')?.addEventListener('click',addUser);document.querySelector('#account-form')?.addEventListener('submit',saveAccount);document.querySelector('#sort-by')?.addEventListener('change',e=>{sortBy=e.target.value;render()});document.querySelector('#sort-dir')?.addEventListener('click',()=>{sortDir=sortDir==='asc'?'desc':'asc';render()});document.querySelector('#view-mode')?.addEventListener('change',e=>{viewMode=e.target.value;render()});document.querySelector('#density')?.addEventListener('change',e=>{density=Number(e.target.value);render()});document.querySelector('#filter-collection')?.addEventListener('change',e=>{filterCollection=e.target.value;render()});document.querySelector('#filter-category')?.addEventListener('change',e=>{filterCategory=e.target.value;render()});document.querySelectorAll('[data-collection]').forEach(x=>x.onclick=()=>{page='catalog';filterCollection=x.dataset.collection;render()});document.querySelector('#add-collection')?.addEventListener('click',addCollection);document.querySelectorAll('[data-edit-collection]').forEach(x=>x.onclick=()=>editCollection(x.dataset.editCollection));document.querySelectorAll('[data-delete-collection]').forEach(x=>x.onclick=()=>deleteCollection(x.dataset.deleteCollection));document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>{filterCollection='';filterCategory='';query='';render()});document.querySelector('#upload-form')?.addEventListener('submit',uploadMultiple);document.querySelector('#upload-files')?.addEventListener('change',e=>{if(uploadInProgress)return;selectedFiles=Array.from(e.target.files||[]);renderUploadSelection()});const drop=document.querySelector('#upload-drop');drop?.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop?.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop?.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');if(uploadInProgress)return;selectedFiles=Array.from(e.dataTransfer?.files||[]);renderUploadSelection()});document.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));document.querySelectorAll('[data-edit-book]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editBook));document.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));document.querySelectorAll('[data-analyze-doc]').forEach(x=>x.onclick=async()=>{try{await analyzeStoredDocument(x.dataset.analyzeDoc,true);await loadUser(me)}catch(e){toast('No se pudo analizar: '+e.message)}});document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUser(x.dataset.editUser));document.querySelectorAll('[data-delete-user]').forEach(x=>x.onclick=()=>deleteUser(x.dataset.deleteUser));bindBooks();if(page==='books'||page==='pending')bindBookManagement()}
+function content(){if(page==='account')return accountPage();if(page==='upload'&&role==='admin')return uploadPage();if((page==='books'||page==='pending')&&role==='admin')return booksPage();if(page==='users'&&role==='admin')return usersPage();if(page==='settings'&&role==='admin')return '<div class="heading"><h1>Configuración</h1></div><div class="panel"><h2>Almacenamiento privado</h2><p>Bucket R2 privado conectado. Los PDFs se entregan por pasarela autenticada.</p><h2>Miniaturas de portada</h2><p>Generá desde este navegador las miniaturas de los PDFs guardados. El proceso omite las que ya existen y almacena cada JPEG en <code>thumbnails/</code> dentro del bucket privado.</p><p><button class="primary" id="generate-thumbnails" '+(thumbnailBatchRunning?'disabled':'')+'>Generar miniaturas faltantes</button></p><progress id="thumbnail-batch-progress" value="0" max="1" style="width:100%;height:10px"></progress><p class="muted" id="thumbnail-batch-status">'+(thumbnailBatchRunning?'Procesamiento en curso…':'Listo. Podés cerrar esta sección, pero mantené abierta la pestaña mientras se procesa.')+'</p><p class="muted">Podés ejecutar el proceso nuevamente: las miniaturas ya guardadas no se vuelven a generar. Si cerrás la pestaña, lo que ya se haya subido permanece en R2.</p><h2>Metadatos</h2><p>Los nuevos PDFs se analizan al subirlos; las sugerencias deben revisarse antes de publicar.</p></div>';if(page==='collections')return collectionsPage();let list=filtered(),title=page==='favorites'?'Mis favoritos':page==='catalog'?'Todos los libros':'Tu biblioteca',controls=page==='catalog'||page==='favorites'?catalogControls():'';return '<div class="heading"><div><h1>'+title+'</h1><p>Hola, '+esc(me.name)+'. Tu biblioteca organizada en un solo lugar.</p></div><span class="tag">'+list.length+' libros</span></div>'+(page==='home'?'<div class="stats"><div>Documentos<b>'+books.length+'</b></div><div>Colecciones<b>'+collections.length+'</b></div><div>Favoritos<b>'+favs.size+'</b></div><div>Lecturas<b>'+history.length+'</b></div></div><h2 class="section-heading">Tus colecciones</h2>'+collectionShelves():'')+controls+(page==='catalog'||page==='favorites'?'<div class="chips">'+[...new Set(books.map(x=>x.category).filter(Boolean))].sort().map(x=>'<button data-cat="'+esc(x)+'">'+esc(x)+'</button>').join('')+'<button data-clear-filters="1">Limpiar filtros</button></div>':'')+'<div class="'+(viewMode==='list'?'book-list':'grid')+'" style="--book-columns:'+density+'">'+list.map(card).join('')+'</div><p class="footnote">'+(live?'Acceso a documentos autorizados por tu cuenta.':'PDF ficticios de demostración.')+'</p>'}
+function render(){window.__BIBLIOTECA_READY__=true;root.innerHTML=(live?'':'<div class="demo-strip">MODO DEMOSTRACIÓN · sin autenticación real</div>')+'<aside class="sidebar"><div class="brand"><b>B</b> MI BIBLIOTECA</div><small>BIBLIOTECA</small>'+nav('home','⌂ Inicio')+nav('catalog','▤ Todos los libros')+nav('favorites','♡ Favoritos')+nav('collections','▦ Colecciones')+nav('account','♙ Mi cuenta')+(role==='admin'?'<small>ADMINISTRACIÓN</small>'+nav('users','♟ Usuarios')+nav('books','▤ Administrar libros')+nav('upload','＋ Subir PDFs')+nav('settings','⚙ Configuración'):'')+'<div class="side-bottom"><b>'+esc(me.name)+'</b><small>'+label(role)+'</small><button id="logout">Cerrar sesión</button></div></aside><main class="main"><header><span>Mi Biblioteca / '+esc(page)+'</span><input id="search" placeholder="Buscar título, autor o tema..." value="'+esc(query)+'"><b>'+esc(me.name)+'</b></header><section class="page">'+content()+'</section></main>';document.querySelectorAll('[data-page]').forEach(x=>x.onclick=()=>{page=x.dataset.page;render()});document.querySelector('#logout').onclick=signOut;document.querySelector('#generate-thumbnails')?.addEventListener('click',runThumbnailBatch);document.querySelector('#search').oninput=e=>{query=e.target.value;const g=document.querySelector('.grid,.book-list');if(g)g.innerHTML=filtered().map(card).join('');bindBooks();if(page==='books'||page==='pending')bindBookManagement()};document.querySelectorAll('[data-cat]').forEach(x=>x.onclick=()=>{page='catalog';filterCategory=x.dataset.cat;filterCollection='';render()});document.querySelector('#add')?.addEventListener('click',addUser);document.querySelector('#account-form')?.addEventListener('submit',saveAccount);document.querySelector('#sort-by')?.addEventListener('change',e=>{sortBy=e.target.value;render()});document.querySelector('#sort-dir')?.addEventListener('click',()=>{sortDir=sortDir==='asc'?'desc':'asc';render()});document.querySelector('#view-mode')?.addEventListener('change',e=>{viewMode=e.target.value;render()});document.querySelector('#density')?.addEventListener('change',e=>{density=Number(e.target.value);render()});document.querySelector('#filter-collection')?.addEventListener('change',e=>{filterCollection=e.target.value;render()});document.querySelector('#filter-category')?.addEventListener('change',e=>{filterCategory=e.target.value;render()});document.querySelectorAll('[data-collection]').forEach(x=>x.onclick=()=>{page='catalog';filterCollection=x.dataset.collection;render()});document.querySelector('#add-collection')?.addEventListener('click',addCollection);document.querySelectorAll('[data-edit-collection]').forEach(x=>x.onclick=()=>editCollection(x.dataset.editCollection));document.querySelectorAll('[data-delete-collection]').forEach(x=>x.onclick=()=>deleteCollection(x.dataset.deleteCollection));document.querySelector('[data-clear-filters]')?.addEventListener('click',()=>{filterCollection='';filterCategory='';query='';render()});document.querySelector('#upload-form')?.addEventListener('submit',uploadMultiple);document.querySelector('#upload-files')?.addEventListener('change',e=>{if(uploadInProgress)return;selectedFiles=Array.from(e.target.files||[]);renderUploadSelection()});const drop=document.querySelector('#upload-drop');drop?.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('dragging')});drop?.addEventListener('dragleave',()=>drop.classList.remove('dragging'));drop?.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('dragging');if(uploadInProgress)return;selectedFiles=Array.from(e.dataTransfer?.files||[]);renderUploadSelection()});document.querySelectorAll('[data-edit-doc]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editDoc));document.querySelectorAll('[data-edit-book]').forEach(x=>x.onclick=()=>editDocumentMetadata(x.dataset.editBook));document.querySelectorAll('[data-delete-book]').forEach(x=>x.onclick=()=>deleteDocument(x.dataset.deleteBook));document.querySelectorAll('[data-analyze-doc]').forEach(x=>x.onclick=async()=>{try{await analyzeStoredDocument(x.dataset.analyzeDoc,true);await loadUser(me)}catch(e){toast('No se pudo analizar: '+e.message)}});document.querySelectorAll('[data-edit-user]').forEach(x=>x.onclick=()=>editUser(x.dataset.editUser));document.querySelectorAll('[data-delete-user]').forEach(x=>x.onclick=()=>deleteUser(x.dataset.deleteUser));bindBooks();if(page==='books'||page==='pending')bindBookManagement()}
 function bindBooks(){document.querySelectorAll('[data-open]').forEach(x=>x.onclick=()=>openBook(x.dataset.open));document.querySelectorAll('[data-fav]').forEach(x=>x.onclick=()=>{favs.has(x.dataset.fav)?favs.delete(x.dataset.fav):favs.add(x.dataset.fav);render()});bindCoverThumbnails()}
 function applyCoverThumbnail(id,imageUrl){
  document.querySelectorAll('[data-cover-id]').forEach(node=>{
@@ -581,6 +582,118 @@ async function renderCoverThumbnail(id){
  }catch(error){
   if(epoch===coverSessionEpoch){coverThumbnailFailed.add(id);console.info('Cover thumbnail unavailable for '+id+':',error?.message||error)}
   return false;
+ }
+}
+async function createThumbnailFromPdf(pdfjs,record,token,gateway){
+ const id=record.id,endpoint=gateway+'/thumbnail/'+encodeURIComponent(id);
+ const existing=await fetch(endpoint,{method:'HEAD',headers:{Authorization:'Bearer '+token}});
+ if(existing.ok&&existing.headers.get('X-Thumbnail-Variant')==='small'){
+  const cached=coverThumbnailCache.get(id);if(cached)URL.revokeObjectURL(cached);
+  coverThumbnailCache.delete(id);coverThumbnailFailed.delete(id);
+  return 'skipped';
+ }
+ if(!existing.ok&&existing.status!==404)throw new Error('No se pudo comprobar la miniatura · HTTP '+existing.status);
+
+ const loadingTask=pdfjs.getDocument({
+  url:gateway+'/pdf/'+encodeURIComponent(id),
+  httpHeaders:{Authorization:'Bearer '+token},
+  withCredentials:false,
+  disableAutoFetch:true,
+  disableStream:true,
+  rangeChunkSize:65536,
+  isEvalSupported:false
+ });
+ let pdf=null,page=null,canvas=null;
+ try{
+  pdf=await loadingTask.promise;
+  page=await pdf.getPage(1);
+  const base=page.getViewport({scale:1}),width=160,height=220;
+  const scale=Math.min(width/base.width,height/base.height);
+  const viewport=page.getViewport({scale});
+  canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+  const context=canvas.getContext('2d',{alpha:false});
+  if(!context)throw new Error('No se pudo crear el lienzo de miniatura.');
+  context.fillStyle='#fff';context.fillRect(0,0,width,height);
+  const offsetX=(width-viewport.width)/2,offsetY=(height-viewport.height)/2;
+  await page.render({
+   canvasContext:context,
+   viewport,
+   transform:[1,0,0,1,offsetX,offsetY],
+   background:'rgb(255,255,255)'
+  }).promise;
+  const blob=await new Promise((resolve,reject)=>{
+   canvas.toBlob(value=>value?resolve(value):reject(new Error('No se pudo codificar la miniatura JPEG.')),'image/jpeg',0.78);
+  });
+  if(blob.size>512*1024)throw new Error('La miniatura supera el límite de 512 KiB.');
+  const uploaded=await fetch(endpoint,{
+   method:'PUT',
+   headers:{Authorization:'Bearer '+token,'Content-Type':'image/jpeg'},
+   body:blob
+  });
+  if(!uploaded.ok)throw new Error((await uploaded.text())||('No se pudo guardar la miniatura · HTTP '+uploaded.status));
+  const result=await uploaded.json();
+  const cached=coverThumbnailCache.get(id);if(cached)URL.revokeObjectURL(cached);
+  coverThumbnailCache.delete(id);coverThumbnailFailed.delete(id);
+  return result.alreadyExists?'skipped':'created';
+ }finally{
+  try{page?.cleanup()}catch{}
+  if(pdf){try{await pdf.destroy()}catch{}}
+  else{try{await loadingTask.destroy()}catch{}}
+  if(canvas){canvas.width=0;canvas.height=0}
+ }
+}
+async function runThumbnailBatch(){
+ if(thumbnailBatchRunning)return;
+ if(role!=='admin'||!live||!db||!c.pdfGatewayUrl)return toast('Esta tarea requiere una sesión real de administrador.');
+ const button=document.querySelector('#generate-thumbnails');
+ const status=document.querySelector('#thumbnail-batch-status');
+ const progress=document.querySelector('#thumbnail-batch-progress');
+ const documents=[...new Map([...books,...pendingDocs]
+  .filter(x=>x.provider==='r2'&&x.uploadStatus==='stored'&&x.id)
+  .map(x=>[x.id,x])).values()];
+ if(!documents.length)return toast('No hay PDFs guardados disponibles para procesar.');
+
+ thumbnailBatchRunning=true;
+ if(button){button.disabled=true;button.textContent='Procesando…'}
+ if(progress){progress.max=documents.length;progress.value=0}
+ if(status)status.textContent='Preparando '+documents.length+' PDFs…';
+ let completed=0,created=0,skipped=0,failed=0,nextIndex=0;
+ const errors=[];
+ try{
+  const {data:{session},error}=await db.auth.getSession();
+  if(error)throw error;
+  if(!session?.access_token)throw new Error('La sesión de administrador expiró.');
+  const gateway=c.pdfGatewayUrl.replace(/\/+$/,'');
+  const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+  const worker=async()=>{
+   while(true){
+    const index=nextIndex++;
+    if(index>=documents.length)return;
+    const record=documents[index];
+    try{
+     const result=await createThumbnailFromPdf(pdfjs,record,session.access_token,gateway);
+     if(result==='created')created++;else skipped++;
+    }catch(error){
+     failed++;errors.push({title:record.title||record.id,message:String(error?.message||error)});
+     console.error('Thumbnail batch failed for '+record.id,error);
+    }finally{
+     completed++;
+     if(progress)progress.value=completed;
+     if(status)status.textContent=completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores';
+    }
+   }
+  };
+  await Promise.all([worker(),worker()]);
+  const summary='Finalizado: '+created+' miniaturas generadas, '+skipped+' ya existentes y '+failed+' errores.';
+  if(status)status.textContent=summary+(errors.length?' Primer error: '+errors[0].title+' · '+errors[0].message:'');
+  toast(summary);
+ }catch(error){
+  if(status)status.textContent='El proceso se interrumpió: '+String(error?.message||error)+' · Las miniaturas ya subidas permanecen guardadas.';
+  toast('No se pudo completar el procesamiento: '+String(error?.message||error));
+ }finally{
+  thumbnailBatchRunning=false;
+  if(button){button.disabled=false;button.textContent='Generar miniaturas faltantes'}
  }
 }
 function drainCoverQueue(){
