@@ -663,7 +663,7 @@ async function runThumbnailBatch(){
   const {data:{session},error}=await db.auth.getSession();
   if(error)throw error;
   if(!session?.access_token)throw new Error('La sesión de administrador expiró.');
-  const gateway=c.pdfGatewayUrl.replace(/\\/+$/,'');
+  let gateway=c.pdfGatewayUrl;while(gateway.endsWith('/'))gateway=gateway.slice(0,-1);
   const pdfjs=await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.min.mjs');
   pdfjs.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.worker.min.mjs';
   pdfjs.GlobalWorkerOptions.rendererSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@6.5.438/build/pdf.renderer.min.mjs';
