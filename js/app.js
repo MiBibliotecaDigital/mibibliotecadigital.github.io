@@ -604,9 +604,7 @@ async function createThumbnailFromPdf(pdfjs,record,token,gateway,onPhase=()=>{})
   url:gateway+'/pdf/'+encodeURIComponent(id),
   httpHeaders:authorization,
   withCredentials:false,
-  disableAutoFetch:true,
-  disableStream:true,
-  rangeChunkSize:65536,
+  // Keep PDF.js streaming and progressive prefetch enabled for faster first-page access.
   isEvalSupported:false,
   disableWorkerRendering:false
  });
@@ -678,21 +676,30 @@ async function runThumbnailBatch(){
  const errors=[],activeJobs=new Map();
  const updateStatus=()=>{
   const active=[...activeJobs.values()];
+  const count=phase=>active.filter(job=>job.phase===phase).length;
   const rendering=active.filter(job=>job.phase==='renderizando');
   const workerRenderers=rendering.filter(job=>job.renderMode==='worker').length;
   const mainRenderers=rendering.filter(job=>job.renderMode==='principal').length;
   const startingRenderers=rendering.filter(job=>job.renderMode===null).length;
-  const otherStages=active.length-rendering.length;
+  const pdfWork=count('descargando y analizando PDF');
+  const checking=count('comprobando miniatura');
+  const preparing=count('preparando renderizado');
+  const encoding=count('codificando JPEG');
+  const uploading=count('subiendo a R2');
   maxActiveJobs=Math.max(maxActiveJobs,active.length);
   maxWorkerRenderers=Math.max(maxWorkerRenderers,workerRenderers);
   maxMainRenderers=Math.max(maxMainRenderers,mainRenderers);
   setStatus(
    completed+' / '+documents.length+' · '+created+' generadas · '+skipped+' ya existentes · '+failed+' errores'+
    ' | Activas '+active.length+'/'+workerCount+
+   ' · PDF '+pdfWork+
    ' · Renderer Worker '+workerRenderers+
    ' · hilo principal '+mainRenderers+
-   (startingRenderers?' · iniciando '+startingRenderers:'')+
-   (otherStages?' · otras etapas '+otherStages:'')
+   (startingRenderers?' · iniciando render '+startingRenderers:'')+
+   (checking?' · verificando '+checking:'')+
+   (preparing?' · preparando '+preparing:'')+
+   (encoding?' · JPEG '+encoding:'')+
+   (uploading?' · subiendo '+uploading:'')
   );
  };
  updateStatus();
