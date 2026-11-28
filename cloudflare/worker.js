@@ -6,7 +6,7 @@ function corsHeaders(origin, appOrigin) {
     "Vary": "Origin",
     "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Range, Content-Type, X-File-Size",
-    "Access-Control-Expose-Headers": "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag, Last-Modified",
+    "Access-Control-Expose-Headers": "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag, Last-Modified, X-Thumbnail-Variant",
     "Access-Control-Max-Age": "86400"
   });
   if (origin && origin === appOrigin) headers.set("Access-Control-Allow-Origin", appOrigin);
@@ -629,22 +629,56 @@ async function putLibraryThumbnail(request, env, headers, documentId) {
   if (contentType !== "image/jpeg") return reply("Only JPEG thumbnails are accepted", 415, headers);
   const declaredSize = Number(request.headers.get("Content-Length") || 0);
   if (declaredSize > 512 * 1024) return reply("Thumbnail exceeds the 512 KiB limit", 413, headers);
+
   const base = env.SUPABASE_URL.replace(/\/+$/, "");
-  const query = new URLSearchParams({ select: "id,provider,r2_key,upload_status", id: "eq." + documentId, provider: "eq.r2", upload_status: "eq.stored", limit: "1" });
-  const response = await fetch(base + "/rest/v1/documents?" + query, {
-    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY, Authorization: auth.authorization, Accept: "application/json" }
+  const query = new URLSearchParams({
+    select: "id,provider,r2_key,upload_status",
+    id: "eq." + documentId,
+    provider: "eq.r2",
+    upload_status: "eq.stored",
+    limit: "1"
   });
-  if (!response.ok) return reply("Could not verify document ownership", 502, headers);
+  const response = await fetch(base + "/rest/v1/documents?" + query, {
+    headers: {
+      apikey: env.SUPABASE_PUBLISHABLE_KEY,
+      Authorization: auth.authorization,
+      Accept: "application/json"
+    }
+  });
+  if (!response.ok) return reply("Could not verify document access", 502, headers);
   const rows = await response.json();
-  if (!Array.isArray(rows) || !rows[0]) return reply("Stored document not found", 404, headers);
+  const document = Array.isArray(rows) ? rows[0] : null;
+  if (!document || typeof document.r2_key !== "string" || !validUploadKey(document.r2_key)) {
+    return reply("Stored document not found", 404, headers);
+  }
+
+  const thumbnailKey = "thumbnails/" + documentId + ".jpg";
+  if (await env.BIBLIOTECA.head(thumbnailKey)) {
+    return jsonReply({ ok: true, alreadyExists: true, documentId }, 200, headers);
+  }
+  const source = await env.BIBLIOTECA.head(document.r2_key);
+  if (!source) return reply("Source PDF is not available in private storage", 404, headers);
+
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (!bytes.length || bytes.length > 512 * 1024) return reply("Thumbnail size is invalid", 413, headers);
-  if (bytes.length < 3 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) return reply("Thumbnail is not a valid JPEG image", 415, headers);
-  await env.BIBLIOTECA.put("covers/" + documentId + ".jpg", bytes, {
-    httpMetadata: { contentType: "image/jpeg", cacheControl: "private, max-age=31536000, immutable" },
-    customMetadata: { documentId, generatedBy: auth.user.id }
+  if (bytes.length < 3 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+    return reply("Thumbnail is not a valid JPEG image", 415, headers);
+  }
+
+  await env.BIBLIOTECA.put(thumbnailKey, bytes, {
+    httpMetadata: {
+      contentType: "image/jpeg",
+      cacheControl: "private, max-age=31536000, immutable"
+    },
+    customMetadata: {
+      documentId,
+      generatedBy: "administrator-browser",
+      sourceKey: document.r2_key,
+      width: "160",
+      height: "220"
+    }
   });
-  return jsonReply({ ok: true, documentId, size: bytes.length }, 201, headers);
+  return jsonReply({ ok: true, documentId, size: bytes.length, stored: true }, 201, headers);
 }
 
 const COVER_PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs";
@@ -1774,8 +1808,13 @@ async function lookupMelosProduct(request, env, headers) {
       const documentId = thumbnailMatch[1];
       if (!UUID_RE.test(documentId)) return reply("Not found", 404, headers);
       try {
-        if (request.method === "GET" || request.method === "HEAD") return await getLibraryThumbnail(request, env, headers, documentId);
-        headers.set("Allow", "GET, HEAD, OPTIONS");
+        if (request.method === "GET" || request.method === "HEAD") {
+          return await getLibraryThumbnail(request, env, headers, documentId);
+        }
+        if (request.method === "PUT") {
+          return await putLibraryThumbnail(request, env, headers, documentId);
+        }
+        headers.set("Allow", "GET, HEAD, PUT, OPTIONS");
         return reply("Method not allowed", 405, headers);
       } catch (error) {
         console.error("Thumbnail gateway failure", error);
@@ -1907,11 +1946,5 @@ async function lookupMelosProduct(request, env, headers) {
       console.error("PDF gateway failure", error);
       return reply("Unable to retrieve document", 502, headers);
     }
-  },
-
-  async scheduled(controller, env, ctx) {
-    ctx.waitUntil(processMissingCoverThumbnails(env, 1).catch(error => {
-      console.error("Scheduled cover backfill failed", error);
-    }));
   }
 };
