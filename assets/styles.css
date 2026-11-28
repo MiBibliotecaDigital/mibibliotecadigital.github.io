@@ -330,3 +330,7 @@ header b{white-space:nowrap}
  .catalog-controls>button,.catalog-controls>.tag-filter{flex-basis:100%}
  .grid{grid-template-columns:1fr}
 }
+
+/* Keep the tag dropdown inside the catalog column at every viewport width. */
+.tag-filter[open]{flex:1 1 100%;min-width:0}
+.tag-filter-menu{position:relative;top:auto;left:auto;right:auto;width:100%;max-width:100%;box-shadow:none;border-top:0;border-radius:0 0 9px 9px}
