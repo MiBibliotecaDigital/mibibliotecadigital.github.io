@@ -611,7 +611,7 @@ async function getLibraryThumbnail(request, env, headers, documentId) {
   headers.set("Content-Type", "image/jpeg");
   headers.set("Content-Length", String(object.size));
   headers.set("Cache-Control", isSmallThumbnail
-    ? "private, max-age=31536000, immutable"
+    ? "private, max-age=3600, must-revalidate"
     : "private, max-age=60, must-revalidate");
   headers.set("X-Thumbnail-Variant", isSmallThumbnail ? "small" : "cover-fallback");
   headers.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet");
@@ -628,7 +628,7 @@ async function putLibraryThumbnail(request, env, headers, documentId) {
   const contentType = (request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
   if (contentType !== "image/jpeg") return reply("Only JPEG thumbnails are accepted", 415, headers);
   const declaredSize = Number(request.headers.get("Content-Length") || 0);
-  if (declaredSize > 512 * 1024) return reply("Thumbnail exceeds the 512 KiB limit", 413, headers);
+  if (declaredSize > 1024 * 1024) return reply("Thumbnail exceeds the 1 MiB limit", 413, headers);
 
   const base = env.SUPABASE_URL.replace(/\/+$/, "");
   const query = new URLSearchParams({
@@ -660,7 +660,7 @@ async function putLibraryThumbnail(request, env, headers, documentId) {
   if (!source) return reply("Source PDF is not available in private storage", 404, headers);
 
   const bytes = new Uint8Array(await request.arrayBuffer());
-  if (!bytes.length || bytes.length > 512 * 1024) return reply("Thumbnail size is invalid", 413, headers);
+  if (!bytes.length || bytes.length > 1024 * 1024) return reply("Thumbnail size is invalid", 413, headers);
   if (bytes.length < 3 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
     return reply("Thumbnail is not a valid JPEG image", 415, headers);
   }
@@ -668,14 +668,15 @@ async function putLibraryThumbnail(request, env, headers, documentId) {
   await env.BIBLIOTECA.put(thumbnailKey, bytes, {
     httpMetadata: {
       contentType: "image/jpeg",
-      cacheControl: "private, max-age=31536000, immutable"
+      cacheControl: "private, max-age=3600, must-revalidate"
     },
     customMetadata: {
       documentId,
       generatedBy: "administrator-browser",
       sourceKey: document.r2_key,
-      width: "160",
-      height: "220"
+      width: "420",
+      height: "580",
+      scaleCap: "1.2"
     }
   });
   return jsonReply({ ok: true, documentId, size: bytes.length, stored: true }, 201, headers);
